@@ -7,3 +7,5 @@ ml/data/
 *.pcap
 *.log
 .DS_Store
+
+*.crt
