@@ -1,4 +1,4 @@
-localhost {
+shield.lab, localhost {
     tls internal
     encode gzip
     reverse_proxy backend-api:8000

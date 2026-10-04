@@ -6,3 +6,4 @@
 - S3 (LLM): phi3:mini 87% GPU / 13% CPU at 4096 context, so it spills. Testing llama3.2:3b next.
 - S3 (LLM): PASS. llama3.2:3b 100% GPU, 46 tok/s. Chosen over phi3:mini (ADR-003).
 - S4 (Compose + HTTPS baseline): PASS. Postgres, Redis, FastAPI and Caddy local-CA TLS healthy. /readyz returns 503 when Redis is stopped. Whole stack about 150 MiB RAM.
+- S2 (capture): PASS for normal traffic. Scapy captured 100% at 1000 pkt/s; losses above about 4-5k pkt/s (noisy). Plan: BPF filter to exclude agent-to-server traffic, report drops in heartbeats, demo attacks at or below 1-2k pkt/s.
