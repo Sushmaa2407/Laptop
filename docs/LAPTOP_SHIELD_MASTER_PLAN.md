@@ -1,4 +1,4 @@
-# Laptop Shield — Master Plan v2 (Solo, Corrected)
+# Laptop Shield — Master Plan v2.1 (Solo, Corrected, Phase 0 complete)
 
 **Project:** Laptop Shield — Endpoint Detection & Response (EDR) with human-in-the-loop IPS, delivered as a small multi-tenant SaaS
 **Owner:** Cod (solo, final-year B.E. CSE major project)
@@ -10,7 +10,7 @@
 
 ## 0. Current status (update this as you go)
 
-- [ ] Phase 0 — Setup & feasibility spikes
+- [x] Phase 0 — Setup & feasibility spikes (done; results in §20)
 - [ ] Phase 1 — Contracts & foundations
 - [ ] Phase 2 — Sensor → ingestion → storage (end-to-end, no detection)
 - [ ] Phase 3 — ML pipeline & detection layers
@@ -109,8 +109,8 @@ Every phase ends with: tests passing in CI, this file updated, and a short note 
 
 ### 4.1 Phase 0 spikes (do these first — they decide the design)
 - **S1 — Model export:** train a tiny `IsolationForest`, convert with `skl2onnx`, load in `onnxruntime`, compare scores to scikit-learn on 100 samples. *Fallback if it fails:* a small autoencoder (PyTorch) exported to ONNX, or One-Class SVM.
-- **S2 — Capture rate:** Scapy `AsyncSniffer` + a flow aggregator on your VM; push ~2–5k packets/s with `tcpreplay` or `iperf3`; record CPU and drops. *Fallback:* lower the demo traffic rate, add a BPF filter, or capture with a lighter library for the hot path.
-- **S3 — LLM latency:** run the chosen small model in Ollama on your laptop; record time-to-answer for a ~300-token evidence prompt. *Fallback:* smaller model, shorter prompt, or hosted API for the demo (document it).
+- **S2 — Capture rate:** Scapy `AsyncSniffer` + a flow aggregator on your VM; push ~2–5k packets/s with `tcpreplay` or `iperf3`; record CPU and drops. *Fallback:* lower the demo traffic rate, add a BPF filter, or capture with a lighter library for the hot path. **Result: Scapy was unreliable above ~1000 pkt/s; a raw AF_PACKET socket worked (ADR-005, §20).**
+- **S3 — LLM latency:** run the chosen small model in Ollama on your laptop; record time-to-answer for a ~300-token evidence prompt. *Fallback:* smaller model, shorter prompt, or hosted API for the demo (document it). **Result: `llama3.2:3b`, 100% GPU, ~46 tok/s (ADR-003, §20).**
 - **S4 — Compose baseline:** Postgres + Redis + a "hello" FastAPI behind Caddy with TLS. *Fallback:* Nginx with a self-signed cert.
 
 ---
@@ -122,7 +122,7 @@ Every phase ends with: tests passing in CI, this file updated, and a short note 
 | Area | Choice | Notes |
 |------|--------|-------|
 | Language | Python 3.11 or 3.12 | Same version in agent, backend, ML env |
-| Capture | Scapy (`AsyncSniffer`) | Linux only for MVP. Windows would need Npcap (stretch) |
+| Capture | Raw `AF_PACKET` socket + `struct` header parsing (ADR-005) | Linux only for MVP. Scapy is used **only in tests** (crafting golden PCAPs). Windows would need a different capture method (stretch) |
 | API | FastAPI + Uvicorn (Gunicorn optional) | Pydantic **v2** |
 | DB | PostgreSQL (current stable, e.g. 16) + SQLAlchemy 2.x async + asyncpg + **Alembic** | Migrations from day one |
 | Queue | Redis 7 + `redis-py` (asyncio) | **Streams** |
@@ -130,7 +130,7 @@ Every phase ends with: tests passing in CI, this file updated, and a short note 
 | Auth | `PyJWT`, `argon2-cffi` | No passlib |
 | HTTP client | `httpx` (async) | Notifications, Ollama |
 | Email | `aiosmtplib` | SMTP creds in env |
-| LLM | Ollama (separate container) + `ollama` `AsyncClient` | Small instruct model (3B–8B class); confirm availability in S3 |
+| LLM | Ollama **native on Windows (GPU)** + `ollama` `AsyncClient` | `llama3.2:3b` (ADR-003); backend reaches it via `host.docker.internal:11434` |
 | Frontend | React + Vite + TypeScript, Recharts, Axios/fetch, Tailwind | Types generated from OpenAPI |
 | Proxy/TLS | Caddy | Automatic HTTPS with a domain; local CA/self-signed for lab |
 | Tests | pytest, pytest-asyncio, httpx, (testcontainers or Compose services), Vitest, 1–2 Playwright smoke tests | |
@@ -164,7 +164,7 @@ Every phase ends with: tests passing in CI, this file updated, and a short note 
 
 **Windows Home (ADR-002):** Hyper-V Manager is not available on Home, so the Ubuntu Server VM will use **VirtualBox** (works alongside WSL2/Docker via the Windows hypervisor platform). Work happens in the **WSL2 Ubuntu terminal**, not Git Bash.
 
-**LLM starting point (ADR-003):** `phi3:mini` is already installed (~2.2 GB, fits in 4 GB VRAM). Use it for spike S3; compare with one other 3B-class model (e.g., `llama3.2:3b` or `qwen2.5:3b`) before choosing the final one.
+**LLM choice (ADR-003, decided):** `llama3.2:3b` (runs 100% on the GPU, ~46 tok/s, follows format instructions). `phi3:mini` spilled 13% to CPU (15 tok/s) and was dropped. Cold start after idle took ~57 s, so the backend warms the model at startup, sets a long `keep_alive`, and falls back to the template explanation on timeout.
 
 **Lab network:** the VM gets two adapters — NAT (internet, package installs) and Host-Only (lab; the Windows host reaches the VM here). The server address and the host-only gateway go into the enforcer's **protected set**; lab mode is on only in this VM.
 
@@ -266,7 +266,7 @@ Generate `openapi.json` in CI and produce the frontend's TypeScript types from i
  LINUX ENDPOINT (VM / laptop)                          SERVER HOST (Docker Compose)
 ┌────────────────────────────────────┐              ┌──────────────────────────────────────────────┐
 │ shield-sensor  (CAP_NET_RAW only)  │              │ caddy  :80/:443  (TLS, only exposed service) │
-│  Scapy → flows → features → batch  │──HTTPS──────►│   ├─ /api/*  → backend-api                   │
+│  AF_PACKET → flows → feats → batch │──HTTPS──────►│   ├─ /api/*  → backend-api                   │
 │  disk-buffer (bounded) + retry     │  API key     │   └─ /*      → frontend (static)             │
 │                                    │              │                                              │
 │ shield-enforcer (CAP_NET_ADMIN)    │◄─HTTPS poll──│ backend-api (FastAPI)                        │
@@ -562,7 +562,7 @@ services:
 
 ### 14.1 Behavior
 - Triggered **after** the alert is stored, via `stream:explain`; the UI shows the alert immediately and fills the explanation in when ready.
-- Ollama runs as its own container; model is a small instruct model chosen after spike S3. Use `AsyncClient`, **temperature 0**, a hard timeout (~30 s), and one retry.
+- Ollama runs **natively on the Windows host** (GPU); the backend container calls it at `OLLAMA_URL` (default `http://host.docker.internal:11434`). Model: `llama3.2:3b`. Use `AsyncClient`, **temperature 0**, `num_ctx` 2048, `keep_alive` ~30 min, a warm-up call at startup, a hard timeout (~30 s), and one retry. If the model is cold the first explanation may time out → deterministic fallback.
 - Request **structured JSON** output (Ollama supports a JSON schema via its `format` option in recent versions — confirm in S3). Fields: `why_flagged`, `signal_conflicts`, `risk_level`, `recommended_action` (enum: `allow`, `block`, `investigate`), `confidence_note`.
 - Cache by hash of the evidence object.
 
@@ -587,7 +587,7 @@ User: <evidence JSON>
 | # | Risk | Likelihood / impact | Mitigation | Fallback |
 |---|------|--------------------|------------|----------|
 | 1 | Isolation Forest → ONNX conversion or version mismatch | Med / High | Spike S1 in week 1; pinned versions | Autoencoder→ONNX or One-Class SVM |
-| 2 | Scapy can't keep up with traffic | Med / Med | BPF filter, batching, benchmark in S2 | Lower demo rate; document limit |
+| 2 | Capture can't keep up with traffic | Med / Med | Raw AF_PACKET socket, large receive buffer (`net.core.rmem_max`), kernel drop counter reported in heartbeats (ADR-005) | Lower demo rate; document limit |
 | 3 | Offline features differ from live features | High / High | Shared feature module + golden tests + lab validation | State as limitation; Path B subset |
 | 4 | Low detection accuracy on some attacks | High / Med | Report per-attack honestly; multi-layer story | Add optional supervised baseline |
 | 5 | LLM too slow / wrong / unavailable | Med / Med | Async job, guard, fallback template, small model | Hosted API for demo (disclosed) |
@@ -698,3 +698,40 @@ laptop-shield/
 ---
 
 *Version 2.0 — created from the v1 review. Keep this document current; it is the project's memory.*
+
+---
+
+## 20. Phase 0 results and decisions log (authoritative — overrides earlier text if they differ)
+
+### 20.1 Measured results
+| Spike | Result |
+|-------|--------|
+| S1 ONNX export | PASS. sklearn 1.9.1, skl2onnx 1.20.0, onnxruntime 1.30.0. ONNX outputs are `label` and `scores`; `scores` == sklearn `decision_function` (higher = more normal, anomalies negative); labels match `predict` 100% |
+| S3 LLM | PASS. `llama3.2:3b`: 100% GPU, ~46 tok/s, 92 tokens in ~2 s; first cold load ~57 s. `phi3:mini`: 87% GPU / 13% CPU, ~15 tok/s |
+| S4 Compose + HTTPS | PASS. Postgres, Redis, FastAPI, Caddy (local CA). `/readyz` returns 503 when Redis is stopped. Whole stack ~150 MiB RAM |
+| S2 VM + connectivity | PASS. Ubuntu Server 24.04 VM (`shield-endpoint`, 2 GB RAM, 2 vCPU, NAT + host-only). VM reaches `https://shield.lab` with the Caddy CA certificate |
+| S2 / S2b capture | Scapy: 100% at 1000 pkt/s but inconsistent above (40–82% at 2000–5000). Raw AF_PACKET socket: 97–98% at ~1000–1500 pkt/s with default buffer; **100%, 0 kernel drops** after raising `net.core.rmem_max` to 16 MB; CPU 15–21% of a core |
+| Test-rig limit | The VM's Python sender could not exceed ~1500 pkt/s, so higher rates were not measured. Demo attacks stay at or below ~1000–1500 pkt/s |
+
+### 20.2 Decisions (ADRs)
+- **ADR-001:** stay on 8 GB RAM; limits in §5.1 apply.
+- **ADR-002:** VirtualBox VM (Windows Home); work in the WSL2 Ubuntu terminal.
+- **ADR-003:** LLM = `llama3.2:3b` via native Ollama (GPU); warm-up, `keep_alive`, template fallback.
+- **ADR-004:** ONNX `scores` = `decision_function`; read outputs by name; alert threshold chosen on benign validation data and stored in the model manifest.
+- **ADR-005:** sensor capture = raw `AF_PACKET` socket + minimal `struct` parsing; Scapy only in tests.
+
+### 20.3 Consequences for the build
+1. **Parser safety.** Hand-written parsing of hostile packets must be defensive: check every length before slicing, never trust header-length fields (IHL, IPv6 extension headers), handle truncated frames, and ignore anything unexpected. Add fuzz/property tests (random and truncated bytes must never crash the sensor).
+2. **IPv6** is parsed in the same module (fixed 40-byte header; handle common extension headers or skip safely) and tested with crafted PCAPs.
+3. **Drop reporting.** Read `PACKET_STATISTICS` (`tp_packets`, `tp_drops`) periodically and send both in heartbeats; dashboard shows "capture overloaded" when drops rise.
+4. **Receive buffer.** Installer writes `/etc/sysctl.d/99-shield.conf` with `net.core.rmem_max=16777216` (sensor keeps only `CAP_NET_RAW`, so it cannot force a larger buffer itself) and the sensor requests a 8–16 MB `SO_RCVBUF`.
+5. **Self-traffic exclusion.** The sensor drops packets to the Shield server's address/port in code (cheap check) to avoid a feedback loop; optionally add a kernel BPF filter later.
+6. **Server name for agents.** The agent uses `https://shield.lab` (VM `/etc/hosts` maps it to the Windows host's host-only address `192.168.56.1`), with the Caddy root certificate supplied via the agent's CA setting. In lab mode the enforcer's protected set must include `192.168.56.1`.
+7. **Ollama reachability.** Backend container calls the host's Ollama at `host.docker.internal:11434`; verify during Phase 6 (if unreachable from the container, set `OLLAMA_HOST` on the Windows side accordingly).
+8. **After a reboot:** run `docker compose up -d` in `deploy/` (add `restart: unless-stopped` to services in Phase 1).
+9. **Caddy memory** was at 52% of its 128 MiB limit; raise to 192m.
+
+### 20.4 Working conventions
+- **Terminal labels:** every command in a step is labeled **[WSL]** (Ubuntu terminal, prompt `sushma@7:~$`), **[PowerShell]** (Windows), **[VM]** (inside the VM over SSH, prompt `lab@shield-endpoint:~$`), **[VirtualBox]** or **[Windows Admin PowerShell]**. Check the prompt before pasting.
+- Lab addresses: VM `192.168.56.103`; Windows host `192.168.56.1` (host-only network).
+- Never commit `deploy/.env` or `*.crt`.
