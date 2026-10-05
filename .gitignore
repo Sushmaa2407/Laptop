@@ -9,3 +9,6 @@ ml/data/
 .DS_Store
 
 *.crt
+
+*.egg-info/
+.pytest_cache/
