@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 asyncpg
 redis
+sqlalchemy[asyncio]
+alembic
