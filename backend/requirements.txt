@@ -4,3 +4,5 @@ asyncpg
 redis
 sqlalchemy[asyncio]
 alembic
+argon2-cffi
+pyjwt

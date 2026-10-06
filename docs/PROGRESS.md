@@ -11,3 +11,4 @@
 - S2b (raw socket capture): about 97-98% captured at about 1000-1500 pkt/s, kernel drop counter works, 15-21% CPU. Decision: raw AF_PACKET sensor (ADR-005).
 - Phase 1.1: shield_common (schemas + IP checks), 59 tests passing.
 - Phase 1.2: SQLAlchemy models, Alembic initial migration applied, db_smoke.py proves tenant-link and constraint rules.
+- Phase 1.3a: security primitives (Argon2id passwords, HS256 access tokens, opaque refresh tokens, settings) with unit tests.
