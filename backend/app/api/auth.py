@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_current_user, get_session
 from app.api.schemas import LoginRequest, MeResponse, RegisterRequest, TokenResponse
-from app.core import security
+from app.core import ratelimit, security
 from app.core.config import Settings, get_settings
 from app.db.models import User
 from app.repositories import auth as auth_repo
@@ -43,21 +43,24 @@ async def _issue_tokens(
     access = security.create_access_token(
         user_id=user.id, tenant_id=user.tenant_id, secret=settings.jwt_secret, ttl_seconds=ttl
     )
-    refresh, refresh_hash = security.new_opaque_token()
+    refresh_token, refresh_hash = security.new_opaque_token()
     auth_repo.add_refresh_token(
         session, user_id=user.id, token_hash=refresh_hash, ttl_days=settings.refresh_token_days
     )
     if audit_action:
         auth_repo.audit(session, user.tenant_id, str(user.id), audit_action)
     await session.commit()
-    _set_refresh_cookie(response, refresh, settings)
+    _set_refresh_cookie(response, refresh_token, settings)
     response.headers["Cache-Control"] = "no-store"
     return TokenResponse(access_token=access, expires_in=ttl)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(body: RegisterRequest, response: Response, session: AsyncSession = Depends(get_session)):
+async def register(
+    body: RegisterRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)
+):
     settings = get_settings()
+    await ratelimit.hit(ratelimit.REGISTER_PER_IP, ratelimit.client_ip(request))
     try:
         security.validate_password_policy(body.password)
     except ValueError as exc:
@@ -75,20 +78,34 @@ async def register(body: RegisterRequest, response: Response, session: AsyncSess
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, response: Response, session: AsyncSession = Depends(get_session)):
+async def login(
+    body: LoginRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)
+):
     settings = get_settings()
+    ip = ratelimit.client_ip(request)
+    await ratelimit.hit(ratelimit.LOGIN_PER_IP, ip)
+    # Locked-out callers are refused BEFORE the password is checked, so a correct guess reveals nothing.
+    await ratelimit.check(ratelimit.LOGIN_FAILS_PER_IP_EMAIL, ip, body.email)
+    await ratelimit.check(ratelimit.LOGIN_FAILS_PER_EMAIL, body.email)
+
     user = await auth_repo.get_user_by_email(session, body.email)
     if user is None or not user.is_active:
         await security.verify_unknown_user(body.password)  # same time cost as a real check
+        ok = False
+    else:
+        ok = await security.verify_password(user.password_hash, body.password)
+    if not ok:
+        await ratelimit.record(ratelimit.LOGIN_FAILS_PER_IP_EMAIL, ip, body.email)
+        await ratelimit.record(ratelimit.LOGIN_FAILS_PER_EMAIL, body.email)
         raise _bad_credentials()
-    if not await security.verify_password(user.password_hash, body.password):
-        raise _bad_credentials()
+    await ratelimit.reset(ratelimit.LOGIN_FAILS_PER_IP_EMAIL, ip, body.email)
     return await _issue_tokens(session, user, response, settings, audit_action="user.login")
 
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(request: Request, response: Response, session: AsyncSession = Depends(get_session)):
     settings = get_settings()
+    await ratelimit.hit(ratelimit.REFRESH_PER_IP, ratelimit.client_ip(request))
     token = request.cookies.get(REFRESH_COOKIE)
     if not token:
         raise _bad_refresh()

@@ -14,3 +14,4 @@
 - Phase 1.3a: security primitives (Argon2id passwords, HS256 access tokens, opaque refresh tokens, settings) with unit tests.
 - Phase 1.3b: register, login, refresh (rotation + reuse detection), logout and /me API with integration tests on shield_test.
 - Phase 1.3c: backend image with shield_common + alembic, migrate one-shot service, restart policies, security headers; register/me/refresh verified over HTTPS through Caddy.
+- Phase 1.3d: Redis rate limiting for register, login and refresh, with tests; X-Forwarded-For spoofing checked through Caddy.

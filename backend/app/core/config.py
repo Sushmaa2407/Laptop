@@ -12,6 +12,7 @@ class Settings:
     access_token_minutes: int = 15
     refresh_token_days: int = 14
     cookie_secure: bool = True
+    rate_limit_enabled: bool = True
 
 
 @lru_cache
@@ -24,4 +25,5 @@ def get_settings() -> Settings:
         access_token_minutes=int(os.environ.get("ACCESS_TOKEN_MINUTES", "15")),
         refresh_token_days=int(os.environ.get("REFRESH_TOKEN_DAYS", "14")),
         cookie_secure=os.environ.get("COOKIE_SECURE", "true").lower() != "false",
+        rate_limit_enabled=os.environ.get("RATE_LIMIT_ENABLED", "true").lower() != "false",
     )

@@ -22,6 +22,7 @@ API = "/api/v1"
 def _settings(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "t" * 48)
     monkeypatch.setenv("COOKIE_SECURE", "false")
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

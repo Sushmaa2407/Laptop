@@ -6,3 +6,5 @@ export DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:54
 echo "DATABASE_URL is set for this terminal"
 export TEST_DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:5432/shield_test"
 export TEST_DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@127.0.0.1:5432/shield_test"
+export TEST_REDIS_URL="redis://:$REDIS_PASSWORD@127.0.0.1:6379/1"
+source "$(dirname "${BASH_SOURCE[0]}")/../.venv/bin/activate"
