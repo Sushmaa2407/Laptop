@@ -1,10 +1,26 @@
 import os
+from contextlib import asynccontextmanager
 
 import asyncpg
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Response
 
-app = FastAPI(title="Laptop Shield API")
+from app.api.auth import me_router
+from app.api.auth import router as auth_router
+from app.core.config import get_settings
+from app.db.session import get_engine
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_settings()  # fail fast if JWT_SECRET is missing or too short
+    yield
+    await get_engine().dispose()
+
+
+app = FastAPI(title="Laptop Shield API", lifespan=lifespan)
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(me_router, prefix="/api/v1")
 
 
 @app.get("/healthz")

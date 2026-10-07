@@ -2,6 +2,7 @@ import os
 from functools import lru_cache
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 
 def database_url() -> str:
@@ -14,6 +15,8 @@ def database_url() -> str:
 
 @lru_cache
 def get_engine() -> AsyncEngine:
+    if os.environ.get("SHIELD_DB_NULLPOOL") == "1":  # used by tests only
+        return create_async_engine(database_url(), poolclass=NullPool)
     return create_async_engine(database_url(), pool_size=5, max_overflow=5, pool_pre_ping=True)
 
 
