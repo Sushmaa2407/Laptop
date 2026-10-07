@@ -13,3 +13,4 @@
 - Phase 1.2: SQLAlchemy models, Alembic initial migration applied, db_smoke.py proves tenant-link and constraint rules.
 - Phase 1.3a: security primitives (Argon2id passwords, HS256 access tokens, opaque refresh tokens, settings) with unit tests.
 - Phase 1.3b: register, login, refresh (rotation + reuse detection), logout and /me API with integration tests on shield_test.
+- Phase 1.3c: backend image with shield_common + alembic, migrate one-shot service, restart policies, security headers; register/me/refresh verified over HTTPS through Caddy.

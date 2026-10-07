@@ -1,5 +1,11 @@
 shield.lab, localhost {
     tls internal
     encode gzip
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        -Server
+    }
     reverse_proxy backend-api:8000
 }
