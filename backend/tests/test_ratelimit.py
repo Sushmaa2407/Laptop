@@ -142,3 +142,10 @@ async def test_limits_can_be_switched_off(client, monkeypatch):
     email, _ = await register(client)
     for _ in range(7):
         assert (await login(client, email, WRONG)).status_code == 401
+
+
+async def test_enrollment_attempts_are_limited_per_ip(client):
+    body = {"code": "x" * 16, "platform": "linux", "version": "0.1.0"}
+    for _ in range(10):
+        assert (await client.post(f"{API}/agent/enroll", json=body)).status_code == 401
+    assert (await client.post(f"{API}/agent/enroll", json=body)).status_code == 429

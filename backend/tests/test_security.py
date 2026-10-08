@@ -145,3 +145,12 @@ def test_settings_require_a_strong_secret(monkeypatch):
     settings = get_settings()
     assert settings.access_token_minutes == 15 and settings.cookie_secure is True
     get_settings.cache_clear()
+
+
+def test_api_keys_and_enrollment_codes():
+    key, key_hash = security.new_api_key()
+    assert key.startswith("shk_") and len(key) >= 40
+    assert key_hash == security.hash_token(key) and len(key_hash) == 64
+    assert security.new_api_key()[0] != key
+    code, code_hash = security.new_enrollment_code()
+    assert len(code) >= 16 and code_hash == security.hash_token(code)

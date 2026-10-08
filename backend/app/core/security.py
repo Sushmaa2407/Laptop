@@ -124,3 +124,15 @@ def new_opaque_token() -> tuple[str, str]:
     """Return (token to give to the client, hash to store in the database)."""
     token = secrets.token_urlsafe(32)
     return token, hash_token(token)
+
+
+def new_api_key() -> tuple[str, str]:
+    """Return (agent API key to show once, hash to store). Keys start with shk_ so they are easy to spot."""
+    key = "shk_" + secrets.token_urlsafe(32)
+    return key, hash_token(key)
+
+
+def new_enrollment_code() -> tuple[str, str]:
+    """Return (one-time enrollment code to show once, hash to store)."""
+    code = secrets.token_urlsafe(12)
+    return code, hash_token(code)

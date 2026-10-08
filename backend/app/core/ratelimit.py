@@ -103,3 +103,7 @@ async def reset(limit: Limit, *parts: str) -> None:
             await r.delete(_key(limit, parts))
     except Exception:
         raise _unavailable() from None
+
+ENROLL_PER_IP = Limit("enroll_ip", 10, 900)
+ENROLL_CODES_PER_TENANT = Limit("enroll_code_tenant", 20, 3600)
+HEARTBEAT_PER_AGENT = Limit("heartbeat_agent", 120, 60)

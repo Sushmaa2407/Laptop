@@ -5,6 +5,8 @@ import asyncpg
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Response
 
+from app.api.agents import agent_router
+from app.api.agents import router as agents_router
 from app.api.auth import me_router
 from app.api.auth import router as auth_router
 from app.core.config import get_settings
@@ -21,6 +23,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Laptop Shield API", lifespan=lifespan)
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(me_router, prefix="/api/v1")
+app.include_router(agents_router, prefix="/api/v1")
+app.include_router(agent_router, prefix="/api/v1")
 
 
 @app.get("/healthz")
