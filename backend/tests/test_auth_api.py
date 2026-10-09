@@ -38,9 +38,7 @@ async def _run_sql(sql: str, **params):
 
 
 async def _purge():
-    await _run_sql(
-        f"DELETE FROM tenants WHERE id IN (SELECT tenant_id FROM users WHERE email LIKE '%@{DOMAIN}')"
-    )
+    await _run_sql(f"DELETE FROM tenants WHERE id IN (SELECT tenant_id FROM users WHERE email LIKE '%@{DOMAIN}')")
 
 
 @pytest.fixture(autouse=True)
@@ -64,9 +62,7 @@ def new_email(prefix="user"):
 
 async def register(client, email=None, password=PASSWORD, tenant="Acme"):
     email = email or new_email()
-    resp = await client.post(
-        f"{API}/auth/register", json={"email": email, "password": password, "tenant_name": tenant}
-    )
+    resp = await client.post(f"{API}/auth/register", json={"email": email, "password": password, "tenant_name": tenant})
     return email, resp
 
 
@@ -113,7 +109,9 @@ async def test_weak_or_invalid_input_rejected(client):
     email = new_email()
     _, r = await register(client, email=email, password=email)  # password equals email
     assert r.status_code == 422
-    r = await client.post(f"{API}/auth/register", json={"email": "not-an-email", "password": PASSWORD, "tenant_name": "x"})
+    r = await client.post(
+        f"{API}/auth/register", json={"email": "not-an-email", "password": PASSWORD, "tenant_name": "x"}
+    )
     assert r.status_code == 422
 
 
@@ -162,7 +160,12 @@ async def test_overlong_login_password_rejected(client):
 
 # ---------------------------------------------------------------- protected endpoint
 async def test_me_requires_a_valid_token(client):
-    for headers in [{}, {"Authorization": "Basic abc"}, {"Authorization": "Bearer"}, {"Authorization": "Bearer garbage"}]:
+    for headers in [
+        {},
+        {"Authorization": "Basic abc"},
+        {"Authorization": "Bearer"},
+        {"Authorization": "Bearer garbage"},
+    ]:
         r = await client.get(f"{API}/me", headers=headers)
         assert r.status_code == 401, headers
         assert r.headers["www-authenticate"] == "Bearer"
@@ -242,8 +245,14 @@ async def test_logout_without_session_is_harmless(client):
 async def test_audit_log_records_events(client):
     email, r = await register(client)
     await client.post(f"{API}/auth/login", json={"email": email, "password": PASSWORD})
-    rows = (await _run_sql(
-        "SELECT action FROM audit_log WHERE tenant_id = (SELECT tenant_id FROM users WHERE email = :e) ORDER BY id",
-        e=email,
-    )).scalars().all()
+    rows = (
+        (
+            await _run_sql(
+                "SELECT action FROM audit_log WHERE tenant_id = (SELECT tenant_id FROM users WHERE email = :e) ORDER BY id",
+                e=email,
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert rows == ["user.registered", "user.login"]

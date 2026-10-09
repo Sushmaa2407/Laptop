@@ -1,12 +1,13 @@
 """Two tenants, each with an agent. Everything one tenant does must be invisible to the other."""
+
 import os
 import uuid
 
 import httpx
 import pytest
+from helpers import API, HEARTBEAT, enroll_agent, purge_domain, register_tenant, run_sql
 
 from app.core.config import get_settings
-from helpers import API, HEARTBEAT, enroll_agent, purge_domain, register_tenant, run_sql
 
 pytestmark = pytest.mark.skipif(
     "TEST_DATABASE_URL" not in os.environ, reason="needs TEST_DATABASE_URL (run: source scripts/dev-env.sh)"
@@ -110,6 +111,8 @@ async def test_database_functions_are_tenant_scoped(world):
 
 async def test_deleting_a_tenant_removes_only_its_data(client, world):
     await run_sql("DELETE FROM tenants WHERE id = :t", t=world["a"]["tenant_id"])
-    assert (await client.post(f"{API}/agent/heartbeat", headers=world["a_agent"]["headers"], json=HEARTBEAT)).status_code == 401
+    assert (
+        await client.post(f"{API}/agent/heartbeat", headers=world["a_agent"]["headers"], json=HEARTBEAT)
+    ).status_code == 401
     left = (await client.get(f"{API}/agents", headers=world["b"]["headers"])).json()
     assert [x["id"] for x in left] == [world["b_agent"]["agent_id"]]

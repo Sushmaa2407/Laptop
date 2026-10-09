@@ -1,4 +1,5 @@
 """Settings read from environment variables. The app refuses to start with a weak secret."""
+
 import os
 from dataclasses import dataclass
 from functools import lru_cache

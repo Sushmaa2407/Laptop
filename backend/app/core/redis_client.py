@@ -1,4 +1,5 @@
 """Short-lived Redis connections for the auth endpoints (ingestion will keep a long-lived client)."""
+
 import os
 from contextlib import asynccontextmanager
 

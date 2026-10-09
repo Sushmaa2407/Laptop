@@ -8,11 +8,26 @@ from shield_common.schemas import Command, Evidence, FlowRecord, Heartbeat, Tele
 
 def make_flow(**over):
     base = dict(
-        flow_id=str(uuid4()), src_ip="192.168.56.103", dst_ip="8.8.8.8",
-        src_port=51514, dst_port=443, protocol="tcp", start_ts=1_790_000_000.0,
-        duration_s=1.5, fwd_packets=10, bwd_packets=8, fwd_bytes=1200, bwd_bytes=9000,
-        pkt_len_mean=566.7, pkt_len_std=400.2, iat_mean_s=0.08,
-        syn_count=1, rst_count=0, fin_count=1, uniq_dst_ports_60s=3, uniq_dst_ips_60s=2,
+        flow_id=str(uuid4()),
+        src_ip="192.168.56.103",
+        dst_ip="8.8.8.8",
+        src_port=51514,
+        dst_port=443,
+        protocol="tcp",
+        start_ts=1_790_000_000.0,
+        duration_s=1.5,
+        fwd_packets=10,
+        bwd_packets=8,
+        fwd_bytes=1200,
+        bwd_bytes=9000,
+        pkt_len_mean=566.7,
+        pkt_len_std=400.2,
+        iat_mean_s=0.08,
+        syn_count=1,
+        rst_count=0,
+        fin_count=1,
+        uniq_dst_ports_60s=3,
+        uniq_dst_ips_60s=2,
     )
     base.update(over)
     return base
@@ -20,15 +35,24 @@ def make_flow(**over):
 
 def make_evidence(**over):
     base = dict(
-        evidence_version=1, alert_id=str(uuid4()),
-        flow=dict(src_ip="192.168.56.103", dst_ip="8.8.8.8", src_port=51514, dst_port=443,
-                  protocol="tcp", start_ts=1_790_000_000.0, duration_s=1.5),
+        evidence_version=1,
+        alert_id=str(uuid4()),
+        flow=dict(
+            src_ip="192.168.56.103",
+            dst_ip="8.8.8.8",
+            src_port=51514,
+            dst_port=443,
+            protocol="tcp",
+            start_ts=1_790_000_000.0,
+            duration_s=1.5,
+        ),
         rule=dict(hit=True, list_name="feodo_blocklist", matched="dst_ip"),
         anomaly=dict(score=0.31, threshold=0.7, is_anomalous=False, model_version="if-v1"),
         temporal=dict(events_seen=42, periodicity_score=0.1, baseline_drift=0.0, is_periodic=False),
         key_features=[dict(name="uniq_dst_ports_60s", value=380)],
         conflicts=["rule_hit_but_anomaly_normal"],
-        severity="high", severity_policy_version=1,
+        severity="high",
+        severity_policy_version=1,
     )
     base.update(over)
     return base
@@ -44,20 +68,40 @@ def test_ipv6_is_normalized():
     FlowRecord(**make_flow(src_ip="::1"))
 
 
-@pytest.mark.parametrize("bad", [
-    "999.1.1.1", "not-an-ip", "", "1.2.3", "1.2.3.4; rm -rf /", "fe80::1%eth0", " 1.2.3.4", "01.2.3.4",
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "999.1.1.1",
+        "not-an-ip",
+        "",
+        "1.2.3",
+        "1.2.3.4; rm -rf /",
+        "fe80::1%eth0",
+        " 1.2.3.4",
+        "01.2.3.4",
+    ],
+)
 def test_bad_ip_rejected(bad):
     with pytest.raises(ValidationError):
         FlowRecord(**make_flow(dst_ip=bad))
 
 
-@pytest.mark.parametrize("field,value", [
-    ("src_port", -1), ("dst_port", 70000), ("fwd_bytes", -5), ("fwd_packets", 2**41),
-    ("duration_s", float("nan")), ("duration_s", float("inf")), ("duration_s", -1.0),
-    ("pkt_len_mean", float("nan")), ("start_ts", 0), ("start_ts", 9_999_999_999_999),
-    ("protocol", "gre"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("src_port", -1),
+        ("dst_port", 70000),
+        ("fwd_bytes", -5),
+        ("fwd_packets", 2**41),
+        ("duration_s", float("nan")),
+        ("duration_s", float("inf")),
+        ("duration_s", -1.0),
+        ("pkt_len_mean", float("nan")),
+        ("start_ts", 0),
+        ("start_ts", 9_999_999_999_999),
+        ("protocol", "gre"),
+    ],
+)
 def test_out_of_range_values_rejected(field, value):
     with pytest.raises(ValidationError):
         FlowRecord(**make_flow(**{field: value}))
@@ -97,8 +141,15 @@ def test_batch_from_json_text():
 
 # ---- Heartbeat
 def test_heartbeat():
-    ok = dict(schema_version=1, agent_version="0.1.0", platform="linux", uptime_s=100,
-              packets_seen=5000, packets_dropped=0, flows_buffer_dropped=0)
+    ok = dict(
+        schema_version=1,
+        agent_version="0.1.0",
+        platform="linux",
+        uptime_s=100,
+        packets_seen=5000,
+        packets_dropped=0,
+        flows_buffer_dropped=0,
+    )
     Heartbeat(**ok)
     with pytest.raises(ValidationError):
         Heartbeat(**{**ok, "packets_dropped": -1})

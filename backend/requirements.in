@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+asyncpg
+redis
+sqlalchemy[asyncio]
+alembic
+argon2-cffi
+pyjwt
+email-validator

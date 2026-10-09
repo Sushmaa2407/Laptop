@@ -1,7 +1,8 @@
 """The database itself refuses cross-tenant links and invalid values (second wall behind the code)."""
+
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -35,10 +36,28 @@ async def two_tenants(session):
 
 def make_flow(tenant_id, agent_id, flow_id):
     return Flow(
-        tenant_id=tenant_id, flow_id=flow_id, agent_id=agent_id, start_ts=datetime.now(timezone.utc),
-        src_ip="10.0.0.1", dst_ip="8.8.8.8", src_port=1, dst_port=2, protocol="tcp", duration_s=1.0,
-        fwd_packets=1, bwd_packets=1, fwd_bytes=1, bwd_bytes=1, pkt_len_mean=1.0, pkt_len_std=0.0,
-        iat_mean_s=0.0, syn_count=0, rst_count=0, fin_count=0, uniq_dst_ports_60s=1, uniq_dst_ips_60s=1,
+        tenant_id=tenant_id,
+        flow_id=flow_id,
+        agent_id=agent_id,
+        start_ts=datetime.now(UTC),
+        src_ip="10.0.0.1",
+        dst_ip="8.8.8.8",
+        src_port=1,
+        dst_port=2,
+        protocol="tcp",
+        duration_s=1.0,
+        fwd_packets=1,
+        bwd_packets=1,
+        fwd_bytes=1,
+        bwd_bytes=1,
+        pkt_len_mean=1.0,
+        pkt_len_std=0.0,
+        iat_mean_s=0.0,
+        syn_count=0,
+        rst_count=0,
+        fin_count=0,
+        uniq_dst_ports_60s=1,
+        uniq_dst_ips_60s=1,
     )
 
 
@@ -68,8 +87,12 @@ async def test_two_tenants_may_use_the_same_flow_id(session):
 
 async def test_command_rules(session):
     t1, t2, a1, _ = await two_tenants(session)
-    await must_fail(session, AgentCommand(tenant_id=t2.id, agent_id=a1.id, type="block_ip", ip="8.8.8.8", ttl_minutes=5))
-    await must_fail(session, AgentCommand(tenant_id=t1.id, agent_id=a1.id, type="unblock_ip", ip="8.8.8.8", ttl_minutes=5))
+    await must_fail(
+        session, AgentCommand(tenant_id=t2.id, agent_id=a1.id, type="block_ip", ip="8.8.8.8", ttl_minutes=5)
+    )
+    await must_fail(
+        session, AgentCommand(tenant_id=t1.id, agent_id=a1.id, type="unblock_ip", ip="8.8.8.8", ttl_minutes=5)
+    )
     await must_fail(session, AgentCommand(tenant_id=t1.id, agent_id=a1.id, type="block_ip", ip="8.8.8.8"))
 
 

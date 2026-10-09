@@ -1,15 +1,16 @@
 import numpy as np
-import sklearn, skl2onnx, onnxruntime as ort
-from sklearn.ensemble import IsolationForest
+import onnxruntime as ort
+import skl2onnx
+import sklearn
 from skl2onnx import to_onnx
+from sklearn.ensemble import IsolationForest
 
 print("versions:", "sklearn", sklearn.__version__, "| skl2onnx", skl2onnx.__version__, "| onnxruntime", ort.__version__)
 
 rng = np.random.default_rng(42)
 X_train = rng.normal(size=(5000, 14)).astype(np.float32)
 # 100 normal rows followed by 20 clearly anomalous rows
-X_test = np.vstack([rng.normal(size=(100, 14)),
-                    rng.normal(loc=6.0, size=(20, 14))]).astype(np.float32)
+X_test = np.vstack([rng.normal(size=(100, 14)), rng.normal(loc=6.0, size=(20, 14))]).astype(np.float32)
 
 model = IsolationForest(n_estimators=100, random_state=42).fit(X_train)
 
@@ -24,10 +25,12 @@ in_name = sess.get_inputs()[0].name
 names = [o.name for o in sess.get_outputs()]
 print("ONNX input:", in_name, "| outputs:", names)
 
-outs = dict(zip(names, sess.run(None, {in_name: X_test})))
+outs = dict(zip(names, sess.run(None, {in_name: X_test}), strict=True))
+
 
 def ranks(a):
     return np.argsort(np.argsort(a))
+
 
 sk_pred = model.predict(X_test)
 sk_ss = model.score_samples(X_test)
@@ -41,5 +44,7 @@ for name, arr in outs.items():
     else:
         print("mean on normal rows:", arr[:100].mean(), "| mean on anomalies:", arr[100:].mean())
         for label, ref in [("score_samples", sk_ss), ("decision_function", sk_df)]:
-            print(f"vs {label}: max abs diff = {np.max(np.abs(arr - ref)):.6f}, "
-                  f"rank correlation = {np.corrcoef(ranks(arr), ranks(ref))[0,1]:.4f}")
+            print(
+                f"vs {label}: max abs diff = {np.max(np.abs(arr - ref)):.6f}, "
+                f"rank correlation = {np.corrcoef(ranks(arr), ranks(ref))[0, 1]:.4f}"
+            )

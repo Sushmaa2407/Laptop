@@ -1,4 +1,5 @@
 """Registration, login, token refresh, logout and /me."""
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,9 +45,7 @@ async def _issue_tokens(
         user_id=user.id, tenant_id=user.tenant_id, secret=settings.jwt_secret, ttl_seconds=ttl
     )
     refresh_token, refresh_hash = security.new_opaque_token()
-    auth_repo.add_refresh_token(
-        session, user_id=user.id, token_hash=refresh_hash, ttl_days=settings.refresh_token_days
-    )
+    auth_repo.add_refresh_token(session, user_id=user.id, token_hash=refresh_hash, ttl_days=settings.refresh_token_days)
     if audit_action:
         auth_repo.audit(session, user.tenant_id, str(user.id), audit_action)
     await session.commit()
@@ -78,9 +77,7 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(
-    body: LoginRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)
-):
+async def login(body: LoginRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)):
     settings = get_settings()
     ip = ratelimit.client_ip(request)
     await ratelimit.hit(ratelimit.LOGIN_PER_IP, ip)

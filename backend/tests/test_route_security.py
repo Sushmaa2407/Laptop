@@ -3,6 +3,7 @@
 It asks the app's own OpenAPI listing for every endpoint, calls each one with no credentials,
 and requires a 401 unless the endpoint is on the explicit public list.
 """
+
 import re
 import uuid
 

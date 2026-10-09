@@ -1,4 +1,5 @@
 """IP address checks shared by the server and the agent."""
+
 import ipaddress
 from collections.abc import Iterable
 
@@ -28,9 +29,7 @@ def _unwrap_mapped(ip: IPAddress) -> IPAddress:
     return ip
 
 
-def validate_block_target(
-    value: str, protected: Iterable[str] = (), lab_mode: bool = False
-) -> IPAddress:
+def validate_block_target(value: str, protected: Iterable[str] = (), lab_mode: bool = False) -> IPAddress:
     """Return the address if it is safe to block, otherwise raise TargetRejected.
 
     protected: IPs or CIDR ranges that must never be blocked (gateway, DNS, the server...).

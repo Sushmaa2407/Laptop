@@ -1,4 +1,5 @@
 """Agent management (for logged-in users) and the agent-facing endpoints (enroll, heartbeat)."""
+
 import uuid
 from datetime import timedelta
 
@@ -43,18 +44,14 @@ async def create_enrollment_code(
     agents_repo.add_enrollment_code(
         session, current.tenant_id, agent_name=body.agent_name, code_hash=code_hash, expires_at=expires_at
     )
-    auth_repo.audit(
-        session, current.tenant_id, str(current.user_id), "agent.enrollment_code_created", body.agent_name
-    )
+    auth_repo.audit(session, current.tenant_id, str(current.user_id), "agent.enrollment_code_created", body.agent_name)
     await session.commit()
     response.headers["Cache-Control"] = "no-store"
     return EnrollmentCodeResponse(code=code, agent_name=body.agent_name, expires_at=expires_at)
 
 
 @router.get("", response_model=list[AgentOut])
-async def list_agents(
-    current: CurrentUser = Depends(get_current_user), session: AsyncSession = Depends(get_session)
-):
+async def list_agents(current: CurrentUser = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
     return await agents_repo.list_agents(session, current.tenant_id)
 
 
@@ -94,8 +91,12 @@ async def enroll(
         raise HTTPException(status_code=401, detail="Invalid or expired enrollment code")
     api_key, key_hash = security.new_api_key()
     agent = await agents_repo.create_agent(
-        session, row.tenant_id, name=row.agent_name, api_key_hash=key_hash,
-        platform=body.platform, version=body.version,
+        session,
+        row.tenant_id,
+        name=row.agent_name,
+        api_key_hash=key_hash,
+        platform=body.platform,
+        version=body.version,
     )
     auth_repo.audit(session, row.tenant_id, f"agent:{agent.id}", "agent.enrolled", str(agent.id))
     await session.commit()  # marking the code used and creating the agent succeed or fail together

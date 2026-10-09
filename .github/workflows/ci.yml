@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"   # every Monday: re-check dependencies for newly published vulnerabilities
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    name: Tests (Postgres and Redis)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: shield
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: shield_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U shield -d shield_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://shield:ci-only-password@127.0.0.1:5432/shield_test
+      TEST_DATABASE_URL: postgresql://shield:ci-only-password@127.0.0.1:5432/shield_test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      TEST_REDIS_URL: redis://127.0.0.1:6379/1
+      JWT_SECRET: ci-only-throwaway-signing-key-0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt -e shared/shield_common
+      - name: Migrations apply to an empty database
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Models and migrations agree
+        working-directory: backend
+        run: alembic check
+      - name: Shared package tests
+        run: python -m pytest shared/shield_common -q
+      - name: Backend tests
+        working-directory: backend
+        run: python -m pytest -q
+
+  audit:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -r backend/requirements-dev.txt
+      - run: pip-audit -r backend/requirements.txt
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the backend image
+        run: docker build -f backend/Dockerfile -t shield-backend:ci .
+      - name: The image can import the app
+        run: docker run --rm shield-backend:ci python -c "import app.main; print('import ok')"
+      - name: The image does not run as root
+        run: test "$(docker run --rm shield-backend:ci id -u)" != "0"
+      - name: The compose file is valid
+        run: |
+          cp deploy/.env.example deploy/.env
+          docker compose -f deploy/docker-compose.yml config -q
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

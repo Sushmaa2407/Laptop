@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Throwaway values used only by CI and example files"
+paths = [
+  '''\.github/workflows/ci\.yml''',
+  '''deploy/\.env\.example''',
+]

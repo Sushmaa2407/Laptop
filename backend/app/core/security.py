@@ -1,4 +1,5 @@
 """Password hashing, access tokens and opaque tokens. No database access in this module."""
+
 import asyncio
 import hashlib
 import secrets
@@ -16,8 +17,13 @@ MIN_SECRET_LENGTH = 32
 JWT_ALGORITHM = "HS256"
 
 _COMMON_PASSWORDS = {
-    "password1234", "123456789012", "qwertyuiop12", "iloveyou1234",
-    "administrator", "letmein123456", "welcome12345",
+    "password1234",
+    "123456789012",
+    "qwertyuiop12",
+    "iloveyou1234",
+    "administrator",
+    "letmein123456",
+    "welcome12345",
 }
 
 _hasher = PasswordHasher()  # Argon2id with the library's recommended parameters

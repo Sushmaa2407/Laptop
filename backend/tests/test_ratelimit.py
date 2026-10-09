@@ -72,9 +72,7 @@ def new_email():
 
 async def register(client, email=None):
     email = email or new_email()
-    r = await client.post(
-        f"{API}/auth/register", json={"email": email, "password": PASSWORD, "tenant_name": "Acme"}
-    )
+    r = await client.post(f"{API}/auth/register", json={"email": email, "password": PASSWORD, "tenant_name": "Acme"})
     return email, r
 
 

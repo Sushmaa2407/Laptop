@@ -5,6 +5,7 @@ Rules:
 - Tenant and agent identity are NEVER in these payloads; the server derives them from the API key.
 - Changing a field is a contract change: bump the version constant and update every consumer.
 """
+
 from typing import Annotated, Literal
 from uuid import UUID
 

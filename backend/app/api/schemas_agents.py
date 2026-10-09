@@ -1,4 +1,5 @@
 """Request and response bodies for agents and enrollment."""
+
 import uuid
 from datetime import datetime
 from typing import Annotated, Literal

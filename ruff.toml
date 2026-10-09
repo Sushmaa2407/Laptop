@@ -1,0 +1,19 @@
+line-length = 120
+target-version = "py312"
+extend-exclude = ["backend/alembic/versions", "docs"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "SIM"]
+
+[lint.per-file-ignores]
+# Tests may use assert, hard-coded throwaway secrets, deliberate "bad" addresses, and f-string SQL on test data.
+"**/tests/**" = ["S101", "S104", "S105", "S106", "S311", "S608", "E501"]
+"backend/scripts/**" = ["S101", "S106"]
+# "bearer" is a label, not a secret.
+"backend/app/api/schemas.py" = ["S105"]
+
+[lint.isort]
+known-first-party = ["app", "shield_common"]
+
+[lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]

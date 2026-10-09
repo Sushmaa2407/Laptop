@@ -5,6 +5,7 @@ Tenant safety built into the schema:
 - Rows that point at an agent, user or alert use COMPOSITE foreign keys that include
   tenant_id, so the database refuses to link rows that belong to different tenants.
 """
+
 import uuid
 from datetime import datetime
 
@@ -108,13 +109,9 @@ class EnrollmentCode(Base):
 class Flow(Base):
     __tablename__ = "flows"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"
-        ),
+        ForeignKeyConstraint(["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"),
         CheckConstraint("protocol IN ('tcp', 'udp', 'icmp', 'other')", name="protocol_valid"),
-        CheckConstraint(
-            "src_port BETWEEN 0 AND 65535 AND dst_port BETWEEN 0 AND 65535", name="ports_valid"
-        ),
+        CheckConstraint("src_port BETWEEN 0 AND 65535 AND dst_port BETWEEN 0 AND 65535", name="ports_valid"),
         Index("ix_flows_tenant_start", "tenant_id", "start_ts"),
     )
     # Composite primary key: a tenant can never collide with another tenant's flow ids.
@@ -148,19 +145,11 @@ class Alert(Base):
     __tablename__ = "alerts"
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_alerts_tenant_id_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "decided_by"], ["users.tenant_id", "users.id"]
-        ),
+        ForeignKeyConstraint(["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "decided_by"], ["users.tenant_id", "users.id"]),
         CheckConstraint("severity IN ('low', 'medium', 'high', 'critical')", name="severity_valid"),
-        CheckConstraint(
-            "status IN ('open', 'allowed', 'blocked', 'dismissed', 'expired')", name="status_valid"
-        ),
-        CheckConstraint(
-            "explanation_status IN ('pending', 'ready', 'fallback')", name="explanation_status_valid"
-        ),
+        CheckConstraint("status IN ('open', 'allowed', 'blocked', 'dismissed', 'expired')", name="status_valid"),
+        CheckConstraint("explanation_status IN ('pending', 'ready', 'fallback')", name="explanation_status_valid"),
         Index("ix_alerts_tenant_created", "tenant_id", "created_at", "id"),
         Index("ix_alerts_tenant_dedupe", "tenant_id", "dedupe_key", "created_at"),
     )
@@ -182,16 +171,10 @@ class Alert(Base):
 class AgentCommand(Base):
     __tablename__ = "commands"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"
-        ),
-        ForeignKeyConstraint(
-            ["tenant_id", "alert_id"], ["alerts.tenant_id", "alerts.id"], ondelete="CASCADE"
-        ),
+        ForeignKeyConstraint(["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "alert_id"], ["alerts.tenant_id", "alerts.id"], ondelete="CASCADE"),
         CheckConstraint("type IN ('block_ip', 'unblock_ip')", name="type_valid"),
-        CheckConstraint(
-            "state IN ('pending', 'applied', 'failed', 'expired', 'reverted')", name="state_valid"
-        ),
+        CheckConstraint("state IN ('pending', 'applied', 'failed', 'expired', 'reverted')", name="state_valid"),
         CheckConstraint(
             "(type = 'block_ip' AND ttl_minutes IS NOT NULL AND ttl_minutes BETWEEN 1 AND 1440)"
             " OR (type = 'unblock_ip' AND ttl_minutes IS NULL)",

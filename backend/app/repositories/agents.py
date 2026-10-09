@@ -4,8 +4,9 @@ Every function takes tenant_id, EXCEPT the two that authenticate a secret
 (consume_enrollment_code and get_active_agent_by_key_hash): there the secret identifies the tenant.
 tests/test_schema_rules.py enforces this rule for every public function in this module.
 """
+
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,9 +17,7 @@ from app.db.models import Agent, EnrollmentCode
 def add_enrollment_code(
     session: AsyncSession, tenant_id: uuid.UUID, *, agent_name: str, code_hash: str, expires_at: datetime
 ) -> None:
-    session.add(
-        EnrollmentCode(tenant_id=tenant_id, agent_name=agent_name, code_hash=code_hash, expires_at=expires_at)
-    )
+    session.add(EnrollmentCode(tenant_id=tenant_id, agent_name=agent_name, code_hash=code_hash, expires_at=expires_at))
 
 
 async def consume_enrollment_code(session: AsyncSession, code_hash: str):
@@ -68,7 +67,7 @@ async def revoke_agent(session: AsyncSession, tenant_id: uuid.UUID, agent_id: uu
         return False
     if agent.status != "revoked":
         agent.status = "revoked"
-        agent.revoked_at = datetime.now(timezone.utc)
+        agent.revoked_at = datetime.now(UTC)
     return True
 
 
@@ -84,7 +83,5 @@ async def touch_agent(
 
 
 async def get_active_agent_by_key_hash(session: AsyncSession, key_hash: str) -> Agent | None:
-    result = await session.execute(
-        select(Agent).where(Agent.api_key_hash == key_hash, Agent.status == "active")
-    )
+    result = await session.execute(select(Agent).where(Agent.api_key_hash == key_hash, Agent.status == "active"))
     return result.scalar_one_or_none()

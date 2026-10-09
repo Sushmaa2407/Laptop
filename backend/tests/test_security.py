@@ -13,8 +13,14 @@ SECRET = "s" * 40
 
 def make_token(drop=(), **over):
     now = int(time.time())
-    payload = {"sub": str(uuid.uuid4()), "tid": str(uuid.uuid4()), "typ": "access",
-               "iat": now, "exp": now + 60, "jti": "abc123"}
+    payload = {
+        "sub": str(uuid.uuid4()),
+        "tid": str(uuid.uuid4()),
+        "typ": "access",
+        "iat": now,
+        "exp": now + 60,
+        "jti": "abc123",
+    }
     payload.update(over)
     for key in drop:
         payload.pop(key, None)
@@ -67,9 +73,7 @@ def test_access_token_roundtrip():
 
 
 def test_expired_token_rejected():
-    token = security.create_access_token(
-        user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), secret=SECRET, ttl_seconds=-60
-    )
+    token = security.create_access_token(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), secret=SECRET, ttl_seconds=-60)
     with pytest.raises(security.InvalidToken):
         security.decode_access_token(token, secret=SECRET)
 
@@ -90,8 +94,14 @@ def test_tampered_payload_rejected():
 
 def test_alg_none_rejected():
     now = int(time.time())
-    payload = {"sub": str(uuid.uuid4()), "tid": str(uuid.uuid4()), "typ": "access",
-               "iat": now, "exp": now + 60, "jti": "abc123"}
+    payload = {
+        "sub": str(uuid.uuid4()),
+        "tid": str(uuid.uuid4()),
+        "typ": "access",
+        "iat": now,
+        "exp": now + 60,
+        "jti": "abc123",
+    }
     token = jwt.encode(payload, None, algorithm="none")
     with pytest.raises(security.InvalidToken):
         security.decode_access_token(token, secret=SECRET)
@@ -118,9 +128,7 @@ def test_junk_rejected(junk):
 
 def test_short_signing_secret_refused():
     with pytest.raises(ValueError):
-        security.create_access_token(
-            user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), secret="short", ttl_seconds=60
-        )
+        security.create_access_token(user_id=uuid.uuid4(), tenant_id=uuid.uuid4(), secret="short", ttl_seconds=60)
 
 
 # ---- opaque tokens

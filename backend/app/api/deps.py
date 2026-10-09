@@ -1,4 +1,5 @@
 """Shared FastAPI dependencies."""
+
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass

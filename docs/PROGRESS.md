@@ -16,3 +16,4 @@
 - Phase 1.3c: backend image with shield_common + alembic, migrate one-shot service, restart policies, security headers; register/me/refresh verified over HTTPS through Caddy.
 - Phase 1.3d: Redis rate limiting for register, login and refresh, with tests; X-Forwarded-For spoofing checked through Caddy.
 - Phase 1.4: agent enrollment, agent API keys, heartbeat, tenant-isolation suite and guardrail tests; enrollment flow verified through HTTPS.
+- Phase 1.5: pinned dependencies (pip-tools), ruff, alembic check, GitHub Actions CI, Dependabot, scripts/check.sh.

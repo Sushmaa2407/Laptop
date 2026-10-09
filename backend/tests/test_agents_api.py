@@ -1,11 +1,11 @@
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from helpers import API, HEARTBEAT, enroll_agent, purge_domain, register_tenant, run_sql
 
 from app.core.config import get_settings
-from helpers import API, HEARTBEAT, enroll_agent, purge_domain, register_tenant, run_sql
 
 pytestmark = pytest.mark.skipif(
     "TEST_DATABASE_URL" not in os.environ, reason="needs TEST_DATABASE_URL (run: source scripts/dev-env.sh)"
@@ -61,7 +61,7 @@ async def test_full_enrollment_flow(client):
     body = r.json()
     assert set(body) == {"code", "agent_name", "expires_at"} and len(body["code"]) >= 16
     expires = datetime.fromisoformat(body["expires_at"])
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert now + timedelta(minutes=14) < expires < now + timedelta(minutes=16)
 
     e = await client.post(f"{API}/agent/enroll", json=enroll_body(body["code"]))
@@ -82,8 +82,8 @@ async def test_secrets_are_stored_only_as_hashes(client):
     key_hash = (await run_sql("SELECT api_key_hash FROM agents WHERE id = :i", i=a["agent_id"])).scalar_one()
     assert len(key_hash) == 64 and key_hash != a["api_key"] and a["api_key"] not in key_hash
     code_hashes = (
-        await run_sql("SELECT code_hash FROM enrollment_codes WHERE tenant_id = :t", t=t["tenant_id"])
-    ).scalars().all()
+        (await run_sql("SELECT code_hash FROM enrollment_codes WHERE tenant_id = :t", t=t["tenant_id"])).scalars().all()
+    )
     assert code_hashes and all(len(h) == 64 and h != a["code"] for h in code_hashes)
 
 
@@ -145,8 +145,11 @@ async def test_heartbeat_rejects_bad_payloads(client):
 
 async def test_heartbeat_needs_a_valid_agent_key(client):
     for headers in [
-        {}, {"Authorization": "Basic abc"}, {"Authorization": "Bearer"},
-        {"Authorization": "Bearer shk_nonsense"}, {"Authorization": "Bearer nokeyprefix"},
+        {},
+        {"Authorization": "Basic abc"},
+        {"Authorization": "Bearer"},
+        {"Authorization": "Bearer shk_nonsense"},
+        {"Authorization": "Bearer nokeyprefix"},
         {"Authorization": "Bearer shk_" + "x" * 5000},
     ]:
         r = await client.post(f"{API}/agent/heartbeat", headers=headers, json=HEARTBEAT)

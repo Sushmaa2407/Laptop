@@ -1,4 +1,5 @@
 """Guardrails for future development: tenant isolation rules that new code must follow."""
+
 import inspect
 
 from app.db import models  # noqa: F401  (importing registers the tables)

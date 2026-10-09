@@ -13,10 +13,22 @@ def test_public_ipv6_ok():
     validate_block_target("2606:4700:4700::1111")
 
 
-@pytest.mark.parametrize("bad", [
-    "", "1.2.3", "999.1.1.1", "01.2.3.4", " 1.2.3.4", "fe80::1%eth0",
-    "1.2.3.4; rm -rf /", "-d 1.2.3.4", "$(reboot)", "1.2.3.4\n", "localhost",
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "1.2.3",
+        "999.1.1.1",
+        "01.2.3.4",
+        " 1.2.3.4",
+        "fe80::1%eth0",
+        "1.2.3.4; rm -rf /",
+        "-d 1.2.3.4",
+        "$(reboot)",
+        "1.2.3.4\n",
+        "localhost",
+    ],
+)
 def test_garbage_rejected(bad):
     with pytest.raises(TargetRejected):
         validate_block_target(bad, lab_mode=True)

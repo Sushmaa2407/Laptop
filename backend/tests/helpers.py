@@ -5,8 +5,13 @@ from sqlalchemy import text
 API = "/api/v1"
 PASSWORD = "correct horse battery"
 HEARTBEAT = dict(
-    schema_version=1, agent_version="0.1.1", platform="linux", uptime_s=100,
-    packets_seen=5000, packets_dropped=0, flows_buffer_dropped=0,
+    schema_version=1,
+    agent_version="0.1.1",
+    platform="linux",
+    uptime_s=100,
+    packets_seen=5000,
+    packets_dropped=0,
+    flows_buffer_dropped=0,
 )
 
 
@@ -35,9 +40,7 @@ async def register_tenant(client, domain: str, tenant_name: str = "Acme") -> dic
 
 
 async def enroll_agent(client, tenant: dict, name="laptop-1", platform="linux", version="0.1.0") -> dict:
-    created = await client.post(
-        f"{API}/agents/enrollment-codes", headers=tenant["headers"], json={"agent_name": name}
-    )
+    created = await client.post(f"{API}/agents/enrollment-codes", headers=tenant["headers"], json={"agent_name": name})
     assert created.status_code == 201, created.text
     code = created.json()["code"]
     r = await client.post(f"{API}/agent/enroll", json={"code": code, "platform": platform, "version": version})

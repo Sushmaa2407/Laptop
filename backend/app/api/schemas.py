@@ -1,4 +1,5 @@
 """Request and response bodies for the HTTP API."""
+
 import uuid
 from typing import Annotated, Literal
 
