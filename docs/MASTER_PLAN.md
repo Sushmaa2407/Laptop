@@ -1,4 +1,4 @@
-# Laptop Shield — Master Plan v2.1 (Solo, Corrected, Phase 0 complete)
+# Laptop Shield — Master Plan v2.2 (Solo, Corrected, Phases 0 and 1 complete)
 
 **Project:** Laptop Shield — Endpoint Detection & Response (EDR) with human-in-the-loop IPS, delivered as a small multi-tenant SaaS
 **Owner:** Cod (solo, final-year B.E. CSE major project)
@@ -11,7 +11,7 @@
 ## 0. Current status (update this as you go)
 
 - [x] Phase 0 — Setup & feasibility spikes (done; results in §20)
-- [ ] Phase 1 — Contracts & foundations
+- [x] Phase 1 — Contracts & foundations (done; results in §21)
 - [ ] Phase 2 — Sensor → ingestion → storage (end-to-end, no detection)
 - [ ] Phase 3 — ML pipeline & detection layers
 - [ ] Phase 4 — Dashboard & notifications
@@ -20,7 +20,7 @@
 - [ ] Phase 7 — Evaluation
 - [ ] Phase 8 — Hardening, report, demo
 
-**Last session:** _(date, what was done, what's next)_
+**Last session:** Phase 1 finished: CI green on GitHub, `main` protected by a ruleset, README with CI badge, Dependabot PRs merged. Next: Phase 2, step 2.1 (defensive packet parser). Details in §21.
 
 ---
 
@@ -735,3 +735,56 @@ laptop-shield/
 - **Terminal labels:** every command in a step is labeled **[WSL]** (Ubuntu terminal, prompt `sushma@7:~$`), **[PowerShell]** (Windows), **[VM]** (inside the VM over SSH, prompt `lab@shield-endpoint:~$`), **[VirtualBox]** or **[Windows Admin PowerShell]**. Check the prompt before pasting.
 - Lab addresses: VM `192.168.56.103`; Windows host `192.168.56.1` (host-only network).
 - Never commit `deploy/.env` or `*.crt`.
+
+---
+
+## 21. Phase 1 results and Phase 2 roadmap (authoritative — overrides earlier text if they differ)
+
+### 21.1 What exists today
+| Area | State |
+|------|-------|
+| API (FastAPI, Python 3.12, behind Caddy HTTPS) | `POST /api/v1/auth/register`, `/login`, `/refresh`, `/logout`; `GET /api/v1/me`; `POST /api/v1/agents/enrollment-codes`; `GET /api/v1/agents`, `GET /api/v1/agents/{id}`, `DELETE /api/v1/agents/{id}` (revoke); `POST /api/v1/agent/enroll`, `POST /api/v1/agent/heartbeat`; `GET /healthz`, `GET /readyz` |
+| Database | 11 tables (Alembic migration 209f7d2dd6b1): tenants, users, refresh_tokens, agents, enrollment_codes, flows, alerts, commands, notification_channels, allowlist, audit_log. Every tenant table has NOT NULL `tenant_id`; links use composite foreign keys that include `tenant_id` |
+| Shared package | `shared/shield_common`: telemetry schema v1 (`FlowRecord`, `TelemetryBatch`, `Heartbeat`), `Command`, evidence models, IP checks (`validate_block_target`) |
+| Security | Argon2id passwords (hashed in a thread), HS256 access JWT (15 min), opaque refresh token with rotation and reuse detection, agent API keys `shk_...` (stored as SHA-256), one-time enrollment codes (15 min, single use), Redis rate limits (fail closed), audit log |
+| Containers | Compose: caddy, backend-api, migrate (one-shot), postgres, redis; non-root backend image; restart policies; security headers |
+| Quality | 59 tests (shared) + 78 tests (backend); guardrail tests for tenant_id on every table, tenant_id on every tenant-data repository function, and "every endpoint rejects anonymous callers unless on the public list" |
+| CI (GitHub Actions) | lint and format (ruff), tests against real Postgres 16 and Redis 7 (migrations on an empty database, `alembic check`), pip-audit, Docker build checks, gitleaks over the whole history; weekly scheduled run; Dependabot weekly |
+| Repository | `main` protected by a ruleset: pull request required (0 approvals), five status checks required, no force push or deletion, linear history; squash merges only |
+
+### 21.2 Decisions made in Phase 1 (ADRs 006–011)
+- **ADR-006:** `flows` is a plain table (no partitioning yet); primary key `(tenant_id, flow_id)`; composite foreign keys enforce same-tenant links. Revisit partitioning only if load tests show a need. A retention job deletes old flows.
+- **ADR-007:** authentication design above. Accepted limitations: access tokens live until expiry after logout (deactivation takes effect at once); registration reveals whether an email exists (409), mitigated by rate limits; two tabs refreshing at the same instant can look like token reuse.
+- **ADR-008:** rate limiting in Redis; keys contain hashes only; locked-out callers are refused before the password is checked; Redis outage returns 503 on these endpoints.
+- **ADR-009:** agents and enrollment; user tokens and agent keys are not interchangeable; another tenant's resource returns the same 404 as a missing one.
+- **ADR-010:** dependencies pinned with pip-tools (edit `*.in`, never the generated `*.txt`); `requirements-dev.in` uses `-r requirements.txt`; CI jobs as listed.
+- **ADR-011:** repository rules as listed.
+
+### 21.3 Working conventions (supersede §17 where they differ)
+1. Work on a branch; open a pull request; wait for the five checks; squash-merge; delete the branch.
+2. Start every terminal with `cd ~/Laptop && source scripts/dev-env.sh` (activates `.venv`, sets database and Redis URLs for tests).
+3. Run `./scripts/check.sh` before every push; it mirrors CI.
+4. Never edit `requirements.txt` or `requirements-dev.txt` by hand; edit the `.in` file and run `pip-compile --strip-extras`.
+5. After adding a dependency or changing CI, test from a clean environment (a fresh venv), because "works in my terminal" hid a real CI bug once.
+6. Every decision gets a short ADR in `docs/adr/`.
+7. Never paste tokens, API keys or `.env` contents into chats or commits.
+8. New tenant-data repository modules (alerts, flows, commands) must be added to the guardrail test in `tests/test_schema_rules.py`; new public endpoints must be added deliberately to the public list in `tests/test_route_security.py`.
+
+### 21.4 Phase 2 roadmap: sensor and ingestion pipeline (target: weeks 4–6 of the original plan)
+| Step | Deliverable | Exit criteria |
+|------|-------------|---------------|
+| 2.1 | Defensive packet parser (Ethernet, IPv4, IPv6 with extension headers, TCP, UDP, ICMP) as pure functions | Property/fuzz tests: random and truncated bytes never raise; golden frames crafted with Scapy (test-only) parse to exact field values |
+| 2.2 | Flow assembler and the shared feature function (`shield_common/features.py`) | Golden PCAP-style tests give exact feature values; idle and active timeouts; bidirectional flows; memory bounded |
+| 2.3 | Sensor runtime: AF_PACKET capture loop, kernel drop counter, large receive buffer, self-traffic exclusion, batching (500 flows), uploader with retry and backoff, size-capped offline buffer, enrollment command, config file at 0600 | Runs in the VM; survives server restarts; reports packets seen/dropped in heartbeats |
+| 2.4 | `POST /api/v1/agent/telemetry`: agent-key auth, body size limit, schema validation, per-agent rate limit, timestamp sanity check, backpressure (503 + Retry-After when the stream is over its high-water mark), `XADD` to `stream:telemetry` | Anonymous and cross-tenant calls refused; oversized and malformed batches rejected; tests added to the guardrail lists |
+| 2.5 | Worker process: consumer group `workers`, batch processing, idempotent bulk insert (`ON CONFLICT DO NOTHING`), `XACK` after commit, `XAUTOCLAIM` for stuck messages, dead-letter stream, `/readyz` shows stream lag and dead-letter count | Kill the worker mid-batch: nothing lost, nothing duplicated |
+| 2.6 | End-to-end in the VM plus failure tests | Flows from a real VM scan appear in Postgres; stop Redis, stop the API, stop the worker, restart each: no data loss beyond the documented offline-buffer cap |
+
+Design notes carried into Phase 2:
+- The parser must never trust header lengths (IHL, IPv6 extension header lengths, TCP data offset) and must treat any malformed frame as "ignore", never as an exception. It runs in the sensor, which keeps only `CAP_NET_RAW`.
+- The sensor excludes its own traffic to the Shield server (address and port) in code.
+- Telemetry limits: at most 500 flows per batch, body at most 1 MB, `schema_version` must equal 1.
+- Agent clocks can be wrong: the server records `received_at`, rejects `start_ts` more than a few minutes in the future or more than 7 days in the past, and never uses the agent clock for anything security-critical.
+- Stream names: `stream:telemetry`, consumer group `workers`, dead letters in `stream:dead`; cap length with `MAXLEN ~ 100000`.
+- Idempotency: the agent creates `flow_id`; retries never create duplicates because of the `(tenant_id, flow_id)` primary key.
+- Dev limits to remember: the 8 GB laptop and 2 GB VM cap what can be measured (about 1,500 packets per second from the test sender).
