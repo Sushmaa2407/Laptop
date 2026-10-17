@@ -18,3 +18,4 @@
 - Phase 1.4: agent enrollment, agent API keys, heartbeat, tenant-isolation suite and guardrail tests; enrollment flow verified through HTTPS.
 - Phase 1.5: pinned dependencies (pip-tools), ruff, alembic check, GitHub Actions CI, Dependabot, scripts/check.sh.
 - Phase 1 complete and CI green. Repository rules, README with CI badge, ADR-011.
+- Plan updated to v2.2: Phase 1 results, working conventions, Phase 2 roadmap.
