@@ -1,0 +1,2 @@
+# Reviewed false positive: a throwaway test constant ("s" * 40) passed as secret=SECRET in a unit test.
+b4c141a38ffb10d895db98ca9f1fde4d9ea1f84b:backend/tests/test_security.py:generic-api-key:71
