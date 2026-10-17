@@ -17,3 +17,4 @@
 - Phase 1.3d: Redis rate limiting for register, login and refresh, with tests; X-Forwarded-For spoofing checked through Caddy.
 - Phase 1.4: agent enrollment, agent API keys, heartbeat, tenant-isolation suite and guardrail tests; enrollment flow verified through HTTPS.
 - Phase 1.5: pinned dependencies (pip-tools), ruff, alembic check, GitHub Actions CI, Dependabot, scripts/check.sh.
+- Phase 1 complete and CI green. Repository rules, README with CI badge, ADR-011.
