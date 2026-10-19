@@ -74,6 +74,10 @@ jobs:
         run: alembic check
       - name: Shared package tests
         run: python -m pytest shared/shield_common -q
+      - name: Install the agent and its test tools
+        run: pip install -r agent/requirements-dev.txt -e agent
+      - name: Agent tests
+        run: python -m pytest agent -q
       - name: Backend tests
         working-directory: backend
         run: python -m pytest -q

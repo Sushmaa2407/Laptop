@@ -12,3 +12,5 @@ ml/data/
 
 *.egg-info/
 .pytest_cache/
+
+.hypothesis/

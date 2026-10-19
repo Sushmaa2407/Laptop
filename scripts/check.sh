@@ -11,6 +11,9 @@ ruff format --check .
 echo "== shared package tests =="
 python -m pytest shared/shield_common -q
 
+echo "== agent tests =="
+python -m pytest agent -q
+
 echo "== backend: migrations apply and match the models =="
 (cd backend && DATABASE_URL="$TEST_DATABASE_URL" alembic upgrade head && DATABASE_URL="$TEST_DATABASE_URL" alembic check)
 

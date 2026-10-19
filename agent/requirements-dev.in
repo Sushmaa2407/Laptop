@@ -1,0 +1,4 @@
+-c ../backend/requirements-dev.txt
+pytest
+hypothesis
+scapy

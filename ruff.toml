@@ -13,7 +13,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "SIM"]
 "backend/app/api/schemas.py" = ["S105"]
 
 [lint.isort]
-known-first-party = ["app", "shield_common"]
+known-first-party = ["app", "shield_common", "shield_agent"]
 
 [lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
