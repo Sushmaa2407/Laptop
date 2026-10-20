@@ -1,0 +1,7 @@
+# ADR-013: Flow assembler and feature math
+- Feature math lives in shield_common.features (FlowAccumulator, Welford running statistics); the flow table lives in the agent. Training scripts will replay packets through the same parser and flow table, so live and offline features come from the same code.
+- Definitions: forward = direction of the first packet; length = IP packet size; pkt_len_std = sample standard deviation (n-1); iat_mean_s = duration/(packets-1); flag counts are per packet; two per-source numbers count distinct destination ports (TCP/UDP only) and addresses over the 60 seconds before the flow started.
+- Flow ends: idle 30 s, active 120 s, TCP close (both FINs or RST, plus 2 s grace), eviction (least recently used when 20,000 flows are active), shutdown. A packet that arrives for a stale flow finishes it and starts a new one.
+- Memory bounds: max 20,000 flows; per-source history capped at 1,024 ports and 1,024 addresses per source and 200,000 entries in total (least recently active source forgotten first). Tests flood the table with 50,000 distinct flows and 20,000 spoofed sources.
+- Invariant tested with random streams: every packet is counted in exactly one flow, and every emitted flow validates against the FlowRecord wire schema.
+- Known limits: later IP fragments have ports 0 and form separate flows; per-source counts saturate at 1,024; the CICFlowMeter column mapping (Phase 3) must be checked against these definitions, especially standard deviation (n-1) and flow termination rules.

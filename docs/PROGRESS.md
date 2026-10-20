@@ -20,3 +20,4 @@
 - Phase 1 complete and CI green. Repository rules, README with CI badge, ADR-011.
 - Plan updated to v2.2: Phase 1 results, working conventions, Phase 2 roadmap.
 - Phase 2.1: defensive packet parser with golden, malformed-frame and fuzz tests (45 agent tests); agent tests added to check.sh and CI; parser speed about 290k packets per second.
+- Phase 2.2: flow assembler (bounded memory, timeouts, TCP close, eviction), shared feature math, per-source scan counters, wire-contract and random-stream tests.
