@@ -59,7 +59,7 @@ dnspython==2.9.0
     #   email-validator
 email-validator==2.3.0
     # via -r requirements.txt
-fastapi==0.143.0
+fastapi==0.155.0
     # via -r requirements.txt
 filelock==4.0.12
     # via cachecontrol
