@@ -1,0 +1,36 @@
+{
+  "model_version": "iforest-v1",
+  "trained_at": "2026-10-21T13:03:04+00:00",
+  "trained_on": "synthetic",
+  "training_flows": 16000,
+  "features": [
+    "duration_s",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "pkt_len_mean",
+    "pkt_len_std",
+    "iat_mean_s",
+    "syn_count",
+    "rst_count",
+    "fin_count",
+    "uniq_dst_ports_60s",
+    "uniq_dst_ips_60s"
+  ],
+  "transform": "log1p",
+  "calibration": {
+    "t": -0.08690955242747743,
+    "k": 40.06082426816199,
+    "formula": "1/(1+exp(k*(decision-t)))"
+  },
+  "threshold": 0.5,
+  "fp_percent": 3.0,
+  "metrics": {
+    "false_positive_rate": 0.03025,
+    "detection_rate_port_scan": 1.0,
+    "detection_rate_syn_flood": 0.7225,
+    "detection_rate_brute_force": 0.5325
+  },
+  "onnx_vs_sklearn_max_abs_diff": 2.2346479466861524e-07
+}

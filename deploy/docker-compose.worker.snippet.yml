@@ -1,0 +1,15 @@
+# Paste this service into deploy/docker-compose.yml, under "services:" (next to backend-api).
+  backend-worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../ml/models:/ml/models:ro
+    mem_limit: 384m

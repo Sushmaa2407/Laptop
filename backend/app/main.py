@@ -7,8 +7,10 @@ from fastapi import FastAPI, Response
 
 from app.api.agents import agent_router
 from app.api.agents import router as agents_router
+from app.api.alerts import router as alerts_router
 from app.api.auth import me_router
 from app.api.auth import router as auth_router
+from app.api.telemetry import router as telemetry_router
 from app.core.config import get_settings
 from app.db.session import get_engine
 
@@ -25,6 +27,8 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(me_router, prefix="/api/v1")
 app.include_router(agents_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")
+app.include_router(telemetry_router, prefix="/api/v1")
+app.include_router(alerts_router, prefix="/api/v1")
 
 
 @app.get("/healthz")

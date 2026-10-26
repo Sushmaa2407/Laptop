@@ -9,6 +9,37 @@ x-backend: &backend
     JWT_SECRET: ${JWT_SECRET}
 
 services:
+  # Paste this service into deploy/docker-compose.yml, under "services:" (next to backend-api).
+  backend-worker:
+    <<: *backend
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../ml/models:/ml/models:ro
+    mem_limit: 384m
+  # Paste this service into deploy/docker-compose.yml under "services:", right after backend-worker.
+  backend-explainer:
+    <<: *backend
+    command: ["python", "-m", "app.explainer"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 192m
+
   caddy:
     image: caddy:2
     restart: unless-stopped

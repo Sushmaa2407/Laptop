@@ -1,0 +1,701 @@
+== TREE ==
+.dockerignore
+.github/dependabot.yml
+.github/workflows/.gitkeep
+.github/workflows/ci.yml
+.gitignore
+.gitleaks.toml
+.gitleaksignore
+LAPTOP_SHIELD_MASTER_PLAN.md:Zone.Identifier
+README.md
+agent/installer/.gitkeep
+agent/pyproject.toml
+agent/requirements-dev.in
+agent/requirements-dev.txt
+agent/scripts/bench_flows.py
+agent/scripts/bench_parser.py
+agent/src/shield_agent/__init__.py
+agent/src/shield_agent/sensor/__init__.py
+agent/src/shield_agent/sensor/flows.py
+agent/src/shield_agent/sensor/packet.py
+agent/tests/frames.py
+agent/tests/test_flows.py
+agent/tests/test_packet_fuzz.py
+agent/tests/test_packet_parse.py
+backend/Dockerfile
+backend/alembic.ini
+backend/alembic/README
+backend/alembic/env.py
+backend/alembic/script.py.mako
+backend/alembic/versions/209f7d2dd6b1_initial_schema.py
+backend/app/.gitkeep
+backend/app/__init__.py
+backend/app/api/__init__.py
+backend/app/api/agents.py
+backend/app/api/auth.py
+backend/app/api/deps.py
+backend/app/api/schemas.py
+backend/app/api/schemas_agents.py
+backend/app/core/__init__.py
+backend/app/core/config.py
+backend/app/core/ratelimit.py
+backend/app/core/redis_client.py
+backend/app/core/security.py
+backend/app/db/__init__.py
+backend/app/db/base.py
+backend/app/db/models.py
+backend/app/db/session.py
+backend/app/main.py
+backend/app/repositories/__init__.py
+backend/app/repositories/agents.py
+backend/app/repositories/auth.py
+backend/pytest.ini
+backend/requirements-dev.in
+backend/requirements-dev.txt
+backend/requirements.in
+backend/requirements.txt
+backend/scripts/db_smoke.py
+backend/tests/conftest.py
+backend/tests/helpers.py
+backend/tests/test_agents_api.py
+backend/tests/test_auth_api.py
+backend/tests/test_db_constraints.py
+backend/tests/test_ratelimit.py
+backend/tests/test_route_security.py
+backend/tests/test_schema_rules.py
+backend/tests/test_security.py
+backend/tests/test_tenant_isolation.py
+deploy/.env.example
+deploy/.gitkeep
+deploy/Caddyfile
+deploy/docker-compose.dev.yml
+deploy/docker-compose.yml
+docs/LAPTOP_SHIELD_MASTER_PLAN.md:Zone.Identifier
+docs/MASTER_PLAN.md
+docs/PROGRESS.md
+docs/adr/.gitkeep
+docs/adr/ADR-003-llm-model.md
+docs/adr/ADR-004-anomaly-score.md
+docs/adr/ADR-005-capture-method.md
+docs/adr/ADR-006-database-schema.md
+docs/adr/ADR-007-authentication.md
+docs/adr/ADR-008-rate-limiting.md
+docs/adr/ADR-009-agents-and-tenant-isolation.md
+docs/adr/ADR-010-ci-and-dependencies.md
+docs/adr/ADR-011-repository-rules.md
+docs/adr/ADR-012-packet-parser.md
+docs/adr/ADR-013-flow-assembler.md
+docs/study/.gitkeep
+frontend/.gitkeep
+ml/configs/.gitkeep
+ml/models/.gitkeep
+ml/notebooks/.gitkeep
+ml/requirements.txt
+ml/results/.gitkeep
+ml/scripts/.gitkeep
+ml/scripts/spike_s1_onnx.py
+ruff.toml
+scripts/.gitkeep
+scripts/check.sh
+scripts/dev-env.sh
+shared/shield_common/pyproject.toml
+shared/shield_common/src/shield_common/__init__.py
+shared/shield_common/src/shield_common/features.py
+shared/shield_common/src/shield_common/ipcheck.py
+shared/shield_common/src/shield_common/schemas.py
+shared/shield_common/tests/test_features.py
+shared/shield_common/tests/test_ipcheck.py
+shared/shield_common/tests/test_schemas.py
+
+== features.py ==
+"""Per-flow statistics, computed one packet at a time in constant memory.
+
+This is the single definition of the flow features. The live sensor and the offline training scripts both
+use it, so the model is trained on numbers computed exactly the way the sensor will compute them later.
+
+Definitions (the training data must match every one of them):
+- forward = the direction of the first packet seen in the flow
+- length = size of the IP packet, headers included
+- pkt_len_std = sample standard deviation (n - 1) of packet lengths, both directions together; 0 for one packet
+- iat_mean_s = mean gap between consecutive packets, both directions together
+               = duration / (packets - 1); 0 for one packet
+- syn_count, fin_count, rst_count = number of packets that carry that TCP flag
+- duration_s = time of the last packet minus time of the first packet
+"""
+
+import math
+
+TCP_FIN = 0x01
+TCP_SYN = 0x02
+TCP_RST = 0x04
+
+FLOW_FEATURE_NAMES = (
+    "duration_s",
+    "fwd_packets",
+    "bwd_packets",
+    "fwd_bytes",
+    "bwd_bytes",
+    "pkt_len_mean",
+    "pkt_len_std",
+    "iat_mean_s",
+    "syn_count",
+    "rst_count",
+    "fin_count",
+)
+
+# Computed per source host (not per flow) by the flow table; window length is fixed at 60 seconds.
+HOST_FEATURE_NAMES = ("uniq_dst_ports_60s", "uniq_dst_ips_60s")
+
+
+class FlowAccumulator:
+    """Running statistics of one flow. Memory use does not depend on the number of packets."""
+
+    __slots__ = (
+        "first_ts",
+        "last_ts",
+        "fwd_packets",
+        "bwd_packets",
+        "fwd_bytes",
+        "bwd_bytes",
+        "syn_count",
+        "rst_count",
+        "fin_count",
+        "_mean",
+        "_m2",
+    )
+
+    def __init__(self, ts: float) -> None:
+        self.first_ts = ts
+        self.last_ts = ts
+        self.fwd_packets = 0
+        self.bwd_packets = 0
+        self.fwd_bytes = 0
+        self.bwd_bytes = 0
+        self.syn_count = 0
+        self.rst_count = 0
+        self.fin_count = 0
+        self._mean = 0.0
+        self._m2 = 0.0
+
+    @property
+    def packets(self) -> int:
+        return self.fwd_packets + self.bwd_packets
+
+    def add(self, ts: float, length: int, forward: bool, tcp_flags: int = 0) -> None:
+        if ts > self.last_ts:
+            self.last_ts = ts  # time never runs backwards inside a flow
+        if forward:
+            self.fwd_packets += 1
+            self.fwd_bytes += length
+        else:
+            self.bwd_packets += 1
+            self.bwd_bytes += length
+        count = self.fwd_packets + self.bwd_packets
+        # Welford's method: stable running mean and sum of squared differences.
+        delta = length - self._mean
+        self._mean += delta / count
+        self._m2 += delta * (length - self._mean)
+        if tcp_flags & TCP_SYN:
+            self.syn_count += 1
+        if tcp_flags & TCP_FIN:
+            self.fin_count += 1
+        if tcp_flags & TCP_RST:
+            self.rst_count += 1
+
+    def features(self) -> dict[str, float | int]:
+        count = self.packets
+        duration = self.last_ts - self.first_ts
+        std = math.sqrt(max(self._m2, 0.0) / (count - 1)) if count > 1 else 0.0
+        iat_mean = duration / (count - 1) if count > 1 else 0.0
+        return {
+            "duration_s": duration,
+            "fwd_packets": self.fwd_packets,
+            "bwd_packets": self.bwd_packets,
+            "fwd_bytes": self.fwd_bytes,
+            "bwd_bytes": self.bwd_bytes,
+            "pkt_len_mean": self._mean,
+            "pkt_len_std": std,
+            "iat_mean_s": iat_mean,
+            "syn_count": self.syn_count,
+            "rst_count": self.rst_count,
+            "fin_count": self.fin_count,
+        }
+
+== flows.py ==
+"""Flow assembly: turn parsed packets into bidirectional flows, with bounded memory.
+
+- A flow is identified by (protocol, endpoint A, endpoint B); both directions belong to the same flow.
+  The sender of the first packet we saw is the "forward" side and becomes the source in the record.
+- A flow ends when it is idle too long, lasts too long (active timeout), its TCP connection closes
+  (both FINs or an RST, plus a short grace period for the final ACK), the table is full (the least
+  recently used flow is evicted), or the sensor shuts down.
+- Memory is bounded no matter what the network sends: at most max_flows flows, and the per-source
+  history used for scan detection has a global entry budget.
+"""
+
+import uuid
+from collections import OrderedDict
+from dataclasses import dataclass
+
+from shield_agent.sensor.packet import (
+    PROTO_ICMP,
+    PROTO_ICMPV6,
+    PROTO_TCP,
+    PROTO_UDP,
+    ParsedPacket,
+    format_address,
+)
+from shield_common.features import TCP_FIN, TCP_RST, FlowAccumulator
+
+REASON_IDLE = "idle"
+REASON_ACTIVE = "active"
+REASON_CLOSED = "closed"
+REASON_EVICTED = "evicted"
+REASON_SHUTDOWN = "shutdown"
+
+HOST_WINDOW_SECONDS = 60.0  # the "_60s" in the per-source feature names
+
+_PROTOCOL_LABELS = {PROTO_TCP: "tcp", PROTO_UDP: "udp", PROTO_ICMP: "icmp", PROTO_ICMPV6: "icmp"}
+
+FlowKey = tuple[int, bytes, int, bytes, int]
+
+
+@dataclass(frozen=True, slots=True)
+class FinishedFlow:
+    ip_version: int
+    src: bytes  # the initiator
+    dst: bytes
+    src_port: int
+    dst_port: int
+    protocol: int
+    start_ts: float
+    reason: str
+    features: dict[str, float | int]
+    uniq_dst_ports_60s: int
+    uniq_dst_ips_60s: int
+
+
+@dataclass(slots=True)
+class TableStats:
+    packets: int = 0
+    flows_created: int = 0
+    flows_finished: int = 0
+    flows_evicted: int = 0
+
+
+# ---------------------------------------------------------------- per-source history (scan detection)
+class _HostWindow:
+    __slots__ = ("ports", "ips")
+
+    def __init__(self) -> None:
+        self.ports: OrderedDict[int, float] = OrderedDict()
+        self.ips: OrderedDict[bytes, float] = OrderedDict()
+
+    def size(self) -> int:
+        return len(self.ports) + len(self.ips)
+
+
+def _trim(window: OrderedDict, cutoff: float, cap: int) -> None:
+    """Drop entries that are too old, or beyond the cap (oldest first; the dict is ordered by last use)."""
+    while window:
+        oldest = next(iter(window))
+        if window[oldest] >= cutoff and len(window) <= cap:
+            return
+        del window[oldest]
+
+
+def _touch(window: OrderedDict, key: object, ts: float, cutoff: float, cap: int) -> None:
+    window[key] = ts
+    window.move_to_end(key)
+    _trim(window, cutoff, cap)
+
+
+class HostTracker:
+    """For each source address: which destination ports and addresses it touched in the last 60 seconds.
+
+    Memory is bounded twice: per source (per_host_cap entries per kind) and globally (max_entries).
+    When the global budget is exceeded the least recently active source is forgotten.
+    """
+
+    def __init__(self, *, max_entries: int = 200_000, per_host_cap: int = 1024) -> None:
+        self._max_entries = max_entries
+        self._per_host_cap = per_host_cap
+        self._hosts: OrderedDict[bytes, _HostWindow] = OrderedDict()
+        self._total = 0
+
+    @property
+    def total_entries(self) -> int:
+        return self._total
+
+    def record(self, src: bytes, dst: bytes, dst_port: int, protocol: int, ts: float) -> tuple[int, int]:
+        """Note that src started a flow to dst; return (distinct ports, distinct addresses) in the window."""
+        window = self._hosts.get(src)
+        if window is None:
+            window = _HostWindow()
+            self._hosts[src] = window
+        else:
+            self._hosts.move_to_end(src)
+        before = window.size()
+        cutoff = ts - HOST_WINDOW_SECONDS
+        if protocol in (PROTO_TCP, PROTO_UDP):  # ports only mean something for these
+            _touch(window.ports, dst_port, ts, cutoff, self._per_host_cap)
+        else:
+            _trim(window.ports, cutoff, self._per_host_cap)
+        _touch(window.ips, dst, ts, cutoff, self._per_host_cap)
+        self._total += window.size() - before
+        while self._total > self._max_entries and len(self._hosts) > 1:
+            _, evicted = self._hosts.popitem(last=False)
+            self._total -= evicted.size()
+        return len(window.ports), len(window.ips)
+
+
+# ---------------------------------------------------------------- the flow table
+class _Flow:
+    __slots__ = (
+        "ip_version",
+        "src",
+        "dst",
+        "src_port",
+        "dst_port",
+        "protocol",
+        "acc",
+        "uniq_ports",
+        "uniq_ips",
+        "fin_fwd",
+        "fin_bwd",
+        "closing_since",
+    )
+
+    def __init__(self, packet: ParsedPacket, ts: float, uniq_ports: int, uniq_ips: int) -> None:
+        self.ip_version = packet.ip_version
+        self.src = packet.src
+        self.dst = packet.dst
+        self.src_port = packet.src_port
+        self.dst_port = packet.dst_port
+        self.protocol = packet.protocol
+        self.acc = FlowAccumulator(ts)
+        self.uniq_ports = uniq_ports
+        self.uniq_ips = uniq_ips
+        self.fin_fwd = False
+        self.fin_bwd = False
+        self.closing_since: float | None = None
+
+
+def _canonical_key(packet: ParsedPacket) -> FlowKey:
+    """Same key for both directions of a conversation."""
+    if (packet.src, packet.src_port) <= (packet.dst, packet.dst_port):
+        return (packet.protocol, packet.src, packet.src_port, packet.dst, packet.dst_port)
+    return (packet.protocol, packet.dst, packet.dst_port, packet.src, packet.src_port)
+
+
+class FlowTable:
+    def __init__(
+        self,
+        *,
+        idle_timeout: float = 30.0,
+        active_timeout: float = 120.0,
+        close_grace: float = 2.0,
+        max_flows: int = 20_000,
+        sweep_interval: float = 1.0,
+        max_host_entries: int = 200_000,
+        max_entries_per_host: int = 1024,
+    ) -> None:
+        self._idle_timeout = idle_timeout
+        self._active_timeout = active_timeout
+        self._close_grace = close_grace
+        self._max_flows = max_flows
+        self._sweep_interval = sweep_interval
+        self._flows: OrderedDict[FlowKey, _Flow] = OrderedDict()  # least recently used first
+        self._hosts = HostTracker(max_entries=max_host_entries, per_host_cap=max_entries_per_host)
+        self._clock = 0.0
+        self._next_sweep = 0.0
+        self.stats = TableStats()
+
+    @property
+    def active_flows(self) -> int:
+        return len(self._flows)
+
+    @property
+    def host_entries(self) -> int:
+        return self._hosts.total_entries
+
+    def process(self, packet: ParsedPacket, ts: float) -> list[FinishedFlow]:
+        """Add one packet. Returns the flows that finished because of it (usually none)."""
+        ts = self._advance(ts)
+        self.stats.packets += 1
+        finished: list[FinishedFlow] = []
+        if ts >= self._next_sweep:
+            finished.extend(self.expire(ts))
+            self._next_sweep = ts + self._sweep_interval
+
+        key = _canonical_key(packet)
+        flow = self._flows.get(key)
+        if flow is not None:
+            reason = self._expired_reason(flow, ts)
+            if reason is not None:  # stale flow with the same addresses: finish it, start a new one
+                del self._flows[key]
+                finished.append(self._finish(flow, reason))
+                flow = None
+
+        if flow is None:
+            if len(self._flows) >= self._max_flows:
+                _, oldest = self._flows.popitem(last=False)
+                self.stats.flows_evicted += 1
+                finished.append(self._finish(oldest, REASON_EVICTED))
+            ports, ips = self._hosts.record(packet.src, packet.dst, packet.dst_port, packet.protocol, ts)
+            flow = _Flow(packet, ts, ports, ips)
+            self.stats.flows_created += 1
+            self._flows[key] = flow
+            forward = True
+        else:
+            self._flows.move_to_end(key)
+            forward = packet.src == flow.src and packet.src_port == flow.src_port
+
+        flags = packet.tcp_flags if packet.protocol == PROTO_TCP else 0
+        flow.acc.add(ts, packet.length, forward, flags)
+        if flags & (TCP_FIN | TCP_RST):
+            self._note_tcp_state(flow, flags, forward, ts)
+        return finished
+
+    def expire(self, now: float) -> list[FinishedFlow]:
+        """Finish every flow that has timed out. The sensor also calls this on a timer when traffic is quiet."""
+        now = self._advance(now)
+        finished: list[FinishedFlow] = []
+        for key, flow in list(self._flows.items()):
+            reason = self._expired_reason(flow, now)
+            if reason is not None:
+                del self._flows[key]
+                finished.append(self._finish(flow, reason))
+        return finished
+
+    def flush_all(self) -> list[FinishedFlow]:
+        """Finish everything (used when the sensor stops)."""
+        finished = [self._finish(flow, REASON_SHUTDOWN) for flow in self._flows.values()]
+        self._flows.clear()
+        return finished
+
+    # ------------------------------------------------------------ helpers
+    def _advance(self, ts: float) -> float:
+        if ts > self._clock:
+            self._clock = ts
+        return self._clock  # time never runs backwards inside the table
+
+    def _expired_reason(self, flow: _Flow, now: float) -> str | None:
+        if flow.closing_since is not None and now - flow.closing_since >= self._close_grace:
+            return REASON_CLOSED
+        if now - flow.acc.last_ts >= self._idle_timeout:
+            return REASON_IDLE
+        if now - flow.acc.first_ts >= self._active_timeout:
+            return REASON_ACTIVE
+        return None
+
+    @staticmethod
+    def _note_tcp_state(flow: _Flow, flags: int, forward: bool, ts: float) -> None:
+        closing = bool(flags & TCP_RST)
+        if flags & TCP_FIN:
+            if forward:
+                flow.fin_fwd = True
+            else:
+                flow.fin_bwd = True
+            closing = closing or (flow.fin_fwd and flow.fin_bwd)
+        if closing and flow.closing_since is None:
+            flow.closing_since = ts
+
+    def _finish(self, flow: _Flow, reason: str) -> FinishedFlow:
+        self.stats.flows_finished += 1
+        return FinishedFlow(
+            ip_version=flow.ip_version,
+            src=flow.src,
+            dst=flow.dst,
+            src_port=flow.src_port,
+            dst_port=flow.dst_port,
+            protocol=flow.protocol,
+            start_ts=flow.acc.first_ts,
+            reason=reason,
+            features=flow.acc.features(),
+            uniq_dst_ports_60s=flow.uniq_ports,
+            uniq_dst_ips_60s=flow.uniq_ips,
+        )
+
+
+def to_record(flow: FinishedFlow, flow_id: uuid.UUID) -> dict[str, object]:
+    """A dict that matches shield_common.schemas.FlowRecord (ready to send as JSON)."""
+    record: dict[str, object] = {
+        "flow_id": str(flow_id),
+        "src_ip": format_address(flow.src),
+        "dst_ip": format_address(flow.dst),
+        "src_port": flow.src_port,
+        "dst_port": flow.dst_port,
+        "protocol": _PROTOCOL_LABELS.get(flow.protocol, "other"),
+        "start_ts": flow.start_ts,
+        "uniq_dst_ports_60s": flow.uniq_dst_ports_60s,
+        "uniq_dst_ips_60s": flow.uniq_dst_ips_60s,
+    }
+    record.update(flow.features)
+    return record
+
+== schemas ==
+__init__.py
+__pycache__
+features.py
+ipcheck.py
+schemas.py
+"""Shared data contracts for Laptop Shield.
+
+Rules:
+- Every model forbids unknown fields, so contract drift fails loudly.
+- Tenant and agent identity are NEVER in these payloads; the server derives them from the API key.
+- Changing a field is a contract change: bump the version constant and update every consumer.
+"""
+
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
+
+from shield_common.ipcheck import normalize_ip
+
+SCHEMA_VERSION = 1
+EVIDENCE_VERSION = 1
+MAX_BATCH_FLOWS = 500
+MAX_COUNT = 2**40
+MAX_BYTES = 2**50
+MAX_FLOW_SECONDS = 86_400
+MAX_EPOCH = 4_102_444_800  # 2100-01-01
+
+IPStr = Annotated[str, StringConstraints(max_length=64), AfterValidator(normalize_ip)]
+Port = Annotated[int, Field(ge=0, le=65535)]
+Count = Annotated[int, Field(ge=0, le=MAX_COUNT)]
+ByteCount = Annotated[int, Field(ge=0, le=MAX_BYTES)]
+FlowSeconds = Annotated[float, Field(ge=0, le=MAX_FLOW_SECONDS, allow_inf_nan=False)]
+Epoch = Annotated[float, Field(gt=0, le=MAX_EPOCH, allow_inf_nan=False)]
+Measure = Annotated[float, Field(ge=0, le=1e12, allow_inf_nan=False)]
+UnitFloat = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+Slug = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_.-]{1,64}$")]
+VersionStr = Annotated[str, StringConstraints(pattern=r"^[0-9A-Za-z.+-]{1,32}$")]
+
+Protocol = Literal["tcp", "udp", "icmp", "other"]
+Severity = Literal["low", "medium", "high", "critical"]
+Conflict = Literal[
+    "rule_hit_but_anomaly_normal",
+    "anomalous_but_no_rule",
+    "periodic_but_not_anomalous",
+]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+# ---------------------------------------------------------------- agent -> server
+class FlowRecord(_Strict):
+    flow_id: UUID  # created by the agent; makes retries idempotent
+    src_ip: IPStr
+    dst_ip: IPStr
+    src_port: Port
+    dst_port: Port
+    protocol: Protocol
+    start_ts: Epoch  # epoch seconds (UTC)
+    duration_s: FlowSeconds
+    fwd_packets: Count
+    bwd_packets: Count
+    fwd_bytes: ByteCount
+    bwd_bytes: ByteCount
+    pkt_len_mean: Measure
+    pkt_len_std: Measure
+    iat_mean_s: Measure
+    syn_count: Count
+    rst_count: Count
+    fin_count: Count
+    uniq_dst_ports_60s: Count  # per source host, sliding window
+    uniq_dst_ips_60s: Count
+
+
+class TelemetryBatch(_Strict):
+    schema_version: Literal[1]
+    flows: list[FlowRecord] = Field(min_length=1, max_length=MAX_BATCH_FLOWS)
+
+
+class Heartbeat(_Strict):
+    schema_version: Literal[1]
+    agent_version: VersionStr
+    platform: Literal["linux", "windows", "other"]
+    uptime_s: Count
+    packets_seen: Count
+    packets_dropped: Count  # kernel drops (PACKET_STATISTICS)
+    flows_buffer_dropped: Count  # flows discarded from the local offline buffer
+
+
+# ---------------------------------------------------------------- server -> agent
+class Command(_Strict):
+    command_id: UUID
+    type: Literal["block_ip", "unblock_ip"]
+    ip: IPStr
+    ttl_minutes: Annotated[int, Field(ge=1, le=1440)] | None = None
+
+    @model_validator(mode="after")
+    def _ttl_rules(self):
+        if self.type == "block_ip" and self.ttl_minutes is None:
+            raise ValueError("block_ip requires ttl_minutes")
+        if self.type == "unblock_ip" and self.ttl_minutes is not None:
+            raise ValueError("unblock_ip must not set ttl_minutes")
+        return self
+
+
+# ---------------------------------------------------------------- detectors -> UI / LLM
+# Numbers, booleans, enums and validated IPs only: never free text from the network.
+class FlowSummary(_Strict):
+    src_ip: IPStr
+    dst_ip: IPStr
+    src_port: Port
+    dst_port: Port
+    protocol: Protocol
+    start_ts: Epoch
+    duration_s: FlowSeconds
+
+
+class RuleEvidence(_Strict):
+    hit: bool
+    list_name: Slug | None = None
+    matched: Literal["src_ip", "dst_ip", "heuristic"] | None = None
+
+
+class AnomalyEvidence(_Strict):
+    score: UnitFloat  # 0..1, higher = more anomalous (calibrated from the ONNX score, ADR-004)
+    threshold: UnitFloat
+    is_anomalous: bool
+    model_version: Slug
+
+
+class TemporalEvidence(_Strict):
+    events_seen: Count
+    periodicity_score: UnitFloat
+    baseline_drift: UnitFloat
+    is_periodic: bool
+
+
+class KeyFeature(_Strict):
+    name: Slug
+    value: Measure
+
+
+class Evidence(_Strict):
+    evidence_version: Literal[1]
+    alert_id: UUID
+    flow: FlowSummary
+    rule: RuleEvidence
+    anomaly: AnomalyEvidence
+    temporal: TemporalEvidence
+    key_features: list[KeyFeature] = Field(max_length=10)
+    conflicts: list[Conflict]
+    severity: Severity
+    severity_policy_version: Annotated[int, Field(ge=1, le=1000)]
+
+== backend routes ==
