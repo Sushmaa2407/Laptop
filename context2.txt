@@ -1,0 +1,1010 @@
+== agent/src/shield_agent/sensor/packet.py ==
+"""Defensive parser for raw Ethernet frames.
+
+The sensor reads frames straight from the network, so every byte is hostile input. Rules:
+- Never trust a length or offset field: check it against the bytes that really exist before reading.
+- Never raise on bad input: return a Skip reason and let the caller count it.
+- Never allocate based on an attacker-controlled number.
+- Do not verify checksums: offloading makes them unreliable at capture time and we only need metadata.
+"""
+
+import enum
+import ipaddress
+from dataclasses import dataclass
+
+Frame = bytes | bytearray | memoryview
+
+ETH_HEADER_LEN = 14
+ETHERTYPE_IPV4 = 0x0800
+ETHERTYPE_IPV6 = 0x86DD
+VLAN_ETHERTYPES = frozenset({0x8100, 0x88A8})
+MAX_VLAN_TAGS = 2
+
+IPV4_MIN_HEADER_LEN = 20
+IPV6_HEADER_LEN = 40
+MAX_IPV6_EXT_HEADERS = 8
+
+PROTO_ICMP = 1
+PROTO_TCP = 6
+PROTO_UDP = 17
+PROTO_ICMPV6 = 58
+
+TCP_FIN = 0x01
+TCP_SYN = 0x02
+TCP_RST = 0x04
+TCP_ACK = 0x10
+
+_IPV6_HOP_BY_HOP = 0
+_IPV6_ROUTING = 43
+_IPV6_FRAGMENT = 44
+_IPV6_AUTH_HEADER = 51
+_IPV6_DEST_OPTIONS = 60
+_IPV6_SIMPLE_EXTENSIONS = frozenset({_IPV6_HOP_BY_HOP, _IPV6_ROUTING, _IPV6_DEST_OPTIONS})
+
+
+class Skip(enum.Enum):
+    """Why a frame was not turned into a ParsedPacket."""
+
+    NOT_IP = "not_ip"  # e.g. ARP: perfectly normal, just not our business
+    TRUNCATED = "truncated"  # a header claims more bytes than the frame has
+    MALFORMED = "malformed"  # a field has a value no valid packet can have
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedPacket:
+    """The few facts the flow assembler needs.
+
+    src/dst are packed addresses (4 or 16 bytes): cheap to hash; use format_address() for text.
+    length is the size of the IP packet (headers included), not the Ethernet frame.
+    Ports are 0 for protocols without ports and for non-first fragments.
+    """
+
+    ip_version: int
+    src: bytes
+    dst: bytes
+    protocol: int
+    src_port: int
+    dst_port: int
+    length: int
+    tcp_flags: int
+    fragment: bool
+
+
+def format_address(packed: bytes) -> str:
+    return str(ipaddress.ip_address(packed))
+
+
+def _u16(data: Frame, index: int) -> int:
+    return (data[index] << 8) | data[index + 1]
+
+
+def parse_frame(frame: Frame) -> ParsedPacket | Skip:
+    n = len(frame)
+    if n < ETH_HEADER_LEN:
+        return Skip.TRUNCATED
+    ethertype = _u16(frame, 12)
+    offset = ETH_HEADER_LEN
+    tags = 0
+    while ethertype in VLAN_ETHERTYPES:
+        if tags >= MAX_VLAN_TAGS:
+            return Skip.MALFORMED
+        if n < offset + 4:
+            return Skip.TRUNCATED
+        ethertype = _u16(frame, offset + 2)
+        offset += 4
+        tags += 1
+    if ethertype == ETHERTYPE_IPV4:
+        return _parse_ipv4(frame, offset)
+    if ethertype == ETHERTYPE_IPV6:
+        return _parse_ipv6(frame, offset)
+    return Skip.NOT_IP
+
+
+def _parse_ipv4(frame: Frame, start: int) -> ParsedPacket | Skip:
+    n = len(frame)
+    if n < start + IPV4_MIN_HEADER_LEN:
+        return Skip.TRUNCATED
+    first = frame[start]
+    if first >> 4 != 4:
+        return Skip.MALFORMED
+    header_len = (first & 0x0F) * 4
+    if header_len < IPV4_MIN_HEADER_LEN:
+        return Skip.MALFORMED
+    if n < start + header_len:
+        return Skip.TRUNCATED
+
+    available = n - start
+    total_len = _u16(frame, start + 2)
+    if total_len == 0 or total_len > available:
+        # Segmentation offload leaves 0 (or a value larger than the frame): use what is really there.
+        total_len = available
+    elif total_len < header_len:
+        return Skip.MALFORMED
+
+    frag_field = _u16(frame, start + 6)
+    fragment_offset = frag_field & 0x1FFF
+    is_fragment = fragment_offset != 0 or bool(frag_field & 0x2000)
+    protocol = frame[start + 9]
+    src = bytes(frame[start + 12 : start + 16])
+    dst = bytes(frame[start + 16 : start + 20])
+
+    if fragment_offset != 0:  # a later fragment carries no transport header
+        return ParsedPacket(4, src, dst, protocol, 0, 0, total_len, 0, True)
+
+    transport = _parse_transport(frame, start + header_len, start + total_len, protocol)
+    if isinstance(transport, Skip):
+        return transport
+    src_port, dst_port, flags = transport
+    return ParsedPacket(4, src, dst, protocol, src_port, dst_port, total_len, flags, is_fragment)
+
+
+def _parse_ipv6(frame: Frame, start: int) -> ParsedPacket | Skip:
+    n = len(frame)
+    if n < start + IPV6_HEADER_LEN:
+        return Skip.TRUNCATED
+    if frame[start] >> 4 != 6:
+        return Skip.MALFORMED
+
+    available = n - start - IPV6_HEADER_LEN
+    payload_len = _u16(frame, start + 4)
+    if payload_len == 0 or payload_len > available:
+        payload_len = available  # offload or jumbogram: use what is really there
+    end = start + IPV6_HEADER_LEN + payload_len
+    length = IPV6_HEADER_LEN + payload_len
+
+    next_header = frame[start + 6]
+    src = bytes(frame[start + 8 : start + 24])
+    dst = bytes(frame[start + 24 : start + 40])
+    offset = start + IPV6_HEADER_LEN
+    is_fragment = False
+
+    for _ in range(MAX_IPV6_EXT_HEADERS + 1):
+        if next_header in _IPV6_SIMPLE_EXTENSIONS:
+            if end - offset < 8:
+                return Skip.TRUNCATED
+            ext_len = (frame[offset + 1] + 1) * 8
+            if end - offset < ext_len:
+                return Skip.TRUNCATED
+            next_header = frame[offset]
+            offset += ext_len
+        elif next_header == _IPV6_FRAGMENT:
+            if end - offset < 8:
+                return Skip.TRUNCATED
+            fragment_offset = _u16(frame, offset + 2) >> 3
+            is_fragment = True
+            next_header = frame[offset]
+            offset += 8
+            if fragment_offset != 0:  # a later fragment carries no transport header
+                return ParsedPacket(6, src, dst, next_header, 0, 0, length, 0, True)
+        elif next_header == _IPV6_AUTH_HEADER:
+            if end - offset < 8:
+                return Skip.TRUNCATED
+            ext_len = (frame[offset + 1] + 2) * 4
+            if end - offset < ext_len:
+                return Skip.TRUNCATED
+            next_header = frame[offset]
+            offset += ext_len
+        else:
+            break
+    else:
+        return Skip.MALFORMED  # more extension headers than any sane packet has
+
+    transport = _parse_transport(frame, offset, end, next_header)
+    if isinstance(transport, Skip):
+        return transport
+    src_port, dst_port, flags = transport
+    return ParsedPacket(6, src, dst, next_header, src_port, dst_port, length, flags, is_fragment)
+
+
+def _parse_transport(frame: Frame, offset: int, end: int, protocol: int) -> tuple[int, int, int] | Skip:
+    """Read ports and TCP flags. `end` is where the IP packet ends (not where the frame ends)."""
+    room = end - offset
+    if protocol == PROTO_TCP:
+        if room < 20:
+            return Skip.TRUNCATED
+        data_offset = (frame[offset + 12] >> 4) * 4
+        if data_offset < 20:
+            return Skip.MALFORMED
+        if room < data_offset:
+            return Skip.TRUNCATED
+        return _u16(frame, offset), _u16(frame, offset + 2), frame[offset + 13]
+    if protocol == PROTO_UDP:
+        if room < 8:
+            return Skip.TRUNCATED
+        return _u16(frame, offset), _u16(frame, offset + 2), 0
+    if protocol in (PROTO_ICMP, PROTO_ICMPV6):
+        if room < 4:
+            return Skip.TRUNCATED
+        return 0, 0, 0
+    return 0, 0, 0  # other protocols: no ports to read
+
+== backend/app/main.py ==
+import os
+from contextlib import asynccontextmanager
+
+import asyncpg
+import redis.asyncio as aioredis
+from fastapi import FastAPI, Response
+
+from app.api.agents import agent_router
+from app.api.agents import router as agents_router
+from app.api.auth import me_router
+from app.api.auth import router as auth_router
+from app.core.config import get_settings
+from app.db.session import get_engine
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_settings()  # fail fast if JWT_SECRET is missing or too short
+    yield
+    await get_engine().dispose()
+
+
+app = FastAPI(title="Laptop Shield API", lifespan=lifespan)
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(me_router, prefix="/api/v1")
+app.include_router(agents_router, prefix="/api/v1")
+app.include_router(agent_router, prefix="/api/v1")
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(response: Response):
+    checks = {}
+    try:
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"], timeout=3)
+        await conn.fetchval("SELECT 1")
+        await conn.close()
+        checks["postgres"] = "ok"
+    except Exception:
+        checks["postgres"] = "fail"
+    try:
+        r = aioredis.from_url(os.environ["REDIS_URL"], socket_connect_timeout=3)
+        await r.ping()
+        await r.aclose()
+        checks["redis"] = "ok"
+    except Exception:
+        checks["redis"] = "fail"
+    if "fail" in checks.values():
+        response.status_code = 503
+    return checks
+
+== backend/app/core/config.py ==
+"""Settings read from environment variables. The app refuses to start with a weak secret."""
+
+import os
+from dataclasses import dataclass
+from functools import lru_cache
+
+MIN_SECRET_LENGTH = 32
+
+
+@dataclass(frozen=True)
+class Settings:
+    jwt_secret: str
+    access_token_minutes: int = 15
+    refresh_token_days: int = 14
+    cookie_secure: bool = True
+    rate_limit_enabled: bool = True
+
+
+@lru_cache
+def get_settings() -> Settings:
+    secret = os.environ.get("JWT_SECRET", "")
+    if len(secret) < MIN_SECRET_LENGTH:
+        raise RuntimeError(f"JWT_SECRET must be set and at least {MIN_SECRET_LENGTH} characters long")
+    return Settings(
+        jwt_secret=secret,
+        access_token_minutes=int(os.environ.get("ACCESS_TOKEN_MINUTES", "15")),
+        refresh_token_days=int(os.environ.get("REFRESH_TOKEN_DAYS", "14")),
+        cookie_secure=os.environ.get("COOKIE_SECURE", "true").lower() != "false",
+        rate_limit_enabled=os.environ.get("RATE_LIMIT_ENABLED", "true").lower() != "false",
+    )
+
+== backend/app/db/models.py ==
+"""Database tables (SQLAlchemy 2.0).
+
+Tenant safety built into the schema:
+- Every table except `tenants` carries tenant_id.
+- Rows that point at an agent, user or alert use COMPOSITE foreign keys that include
+  tenant_id, so the database refuses to link rows that belong to different tenants.
+"""
+
+import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Identity,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import CIDR, INET, JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+def uuid_pk():
+    return mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+
+
+def now_col():
+    return mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+def tenant_fk_col():
+    return mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = now_col()
+
+
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id_id"),
+        CheckConstraint("email = lower(email)", name="email_lowercase"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk_col()
+    email: Mapped[str] = mapped_column(String(254), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
+    created_at: Mapped[datetime] = now_col()
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = now_col()
+
+
+class Agent(Base):
+    __tablename__ = "agents"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_agents_tenant_id_id"),
+        CheckConstraint("status IN ('active', 'revoked')", name="status_valid"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk_col()
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    api_key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    platform: Mapped[str | None] = mapped_column(String(16))
+    version: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), server_default="active", nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = now_col()
+
+
+class EnrollmentCode(Base):
+    __tablename__ = "enrollment_codes"
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk_col()
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = now_col()
+
+
+class Flow(Base):
+    __tablename__ = "flows"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"),
+        CheckConstraint("protocol IN ('tcp', 'udp', 'icmp', 'other')", name="protocol_valid"),
+        CheckConstraint("src_port BETWEEN 0 AND 65535 AND dst_port BETWEEN 0 AND 65535", name="ports_valid"),
+        Index("ix_flows_tenant_start", "tenant_id", "start_ts"),
+    )
+    # Composite primary key: a tenant can never collide with another tenant's flow ids.
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    flow_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    start_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    src_ip: Mapped[str] = mapped_column(INET, nullable=False)
+    dst_ip: Mapped[str] = mapped_column(INET, nullable=False)
+    src_port: Mapped[int] = mapped_column(Integer, nullable=False)
+    dst_port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(8), nullable=False)
+    duration_s: Mapped[float] = mapped_column(Float, nullable=False)
+    fwd_packets: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bwd_packets: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fwd_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bwd_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    pkt_len_mean: Mapped[float] = mapped_column(Float, nullable=False)
+    pkt_len_std: Mapped[float] = mapped_column(Float, nullable=False)
+    iat_mean_s: Mapped[float] = mapped_column(Float, nullable=False)
+    syn_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rst_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fin_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    uniq_dst_ports_60s: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    uniq_dst_ips_60s: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    anomaly_score: Mapped[float | None] = mapped_column(Float)
+    received_at: Mapped[datetime] = now_col()
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_alerts_tenant_id_id"),
+        ForeignKeyConstraint(["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "decided_by"], ["users.tenant_id", "users.id"]),
+        CheckConstraint("severity IN ('low', 'medium', 'high', 'critical')", name="severity_valid"),
+        CheckConstraint("status IN ('open', 'allowed', 'blocked', 'dismissed', 'expired')", name="status_valid"),
+        CheckConstraint("explanation_status IN ('pending', 'ready', 'fallback')", name="explanation_status_valid"),
+        Index("ix_alerts_tenant_created", "tenant_id", "created_at", "id"),
+        Index("ix_alerts_tenant_dedupe", "tenant_id", "dedupe_key", "created_at"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    flow_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))  # flows expire; no FK
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), server_default="open", nullable=False)
+    dedupe_key: Mapped[str | None] = mapped_column(String(200))
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    explanation: Mapped[dict | None] = mapped_column(JSONB)
+    explanation_status: Mapped[str] = mapped_column(String(16), server_default="pending", nullable=False)
+    created_at: Mapped[datetime] = now_col()
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+
+class AgentCommand(Base):
+    __tablename__ = "commands"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id", "agent_id"], ["agents.tenant_id", "agents.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["tenant_id", "alert_id"], ["alerts.tenant_id", "alerts.id"], ondelete="CASCADE"),
+        CheckConstraint("type IN ('block_ip', 'unblock_ip')", name="type_valid"),
+        CheckConstraint("state IN ('pending', 'applied', 'failed', 'expired', 'reverted')", name="state_valid"),
+        CheckConstraint(
+            "(type = 'block_ip' AND ttl_minutes IS NOT NULL AND ttl_minutes BETWEEN 1 AND 1440)"
+            " OR (type = 'unblock_ip' AND ttl_minutes IS NULL)",
+            name="ttl_matches_type",
+        ),
+        Index("ix_commands_tenant_agent_state", "tenant_id", "agent_id", "state"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    agent_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    alert_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    ip: Mapped[str] = mapped_column(INET, nullable=False)
+    ttl_minutes: Mapped[int | None] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(16), server_default="pending", nullable=False)
+    created_at: Mapped[datetime] = now_col()
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result: Mapped[str | None] = mapped_column(String(200))
+
+
+class NotificationChannel(Base):
+    __tablename__ = "notification_channels"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "type", "address", name="uq_notification_channels_tenant_type_address"),
+        CheckConstraint("type IN ('email', 'telegram')", name="type_valid"),
+    )
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk_col()
+    type: Mapped[str] = mapped_column(String(16), nullable=False)
+    address: Mapped[str] = mapped_column(String(320), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = now_col()
+
+
+class AllowlistEntry(Base):
+    __tablename__ = "allowlist"
+    __table_args__ = (UniqueConstraint("tenant_id", "cidr", name="uq_allowlist_tenant_cidr"),)
+    id: Mapped[uuid.UUID] = uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = tenant_fk_col()
+    cidr: Mapped[str] = mapped_column(CIDR, nullable=False)
+    note: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = now_col()
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_log_tenant_created", "tenant_id", "created_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = tenant_fk_col()
+    actor: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = now_col()
+
+== backend/app/api/deps.py ==
+"""Shared FastAPI dependencies."""
+
+import uuid
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+
+from fastapi import Depends, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import security
+from app.core.config import get_settings
+from app.db.session import get_sessionmaker
+from app.repositories import agents as agents_repo
+from app.repositories import auth as auth_repo
+
+MAX_CREDENTIAL_LENGTH = 512
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    async with get_sessionmaker()() as session:
+        yield session
+
+
+@dataclass(frozen=True)
+class CurrentUser:
+    user_id: uuid.UUID
+    tenant_id: uuid.UUID
+    email: str
+
+
+@dataclass(frozen=True)
+class CurrentAgent:
+    agent_id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+
+
+def _unauthorized() -> HTTPException:
+    return HTTPException(status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"})
+
+
+def _bearer_token(request: Request) -> str:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token or len(token) > MAX_CREDENTIAL_LENGTH:
+        raise _unauthorized()
+    return token
+
+
+async def get_current_user(request: Request, session: AsyncSession = Depends(get_session)) -> CurrentUser:
+    token = _bearer_token(request)
+    try:
+        claims = security.decode_access_token(token, secret=get_settings().jwt_secret)
+    except security.InvalidToken:
+        raise _unauthorized() from None
+    # The token alone is not enough: the account must still exist, be active,
+    # and belong to the tenant named in the token.
+    user = await auth_repo.get_user_by_id(session, claims.user_id)
+    if user is None or not user.is_active or user.tenant_id != claims.tenant_id:
+        raise _unauthorized()
+    return CurrentUser(user_id=user.id, tenant_id=user.tenant_id, email=user.email)
+
+
+async def get_current_agent(request: Request, session: AsyncSession = Depends(get_session)) -> CurrentAgent:
+    key = _bearer_token(request)
+    if not key.startswith("shk_"):
+        raise _unauthorized()
+    agent = await agents_repo.get_active_agent_by_key_hash(session, security.hash_token(key))
+    if agent is None:
+        raise _unauthorized()
+    return CurrentAgent(agent_id=agent.id, tenant_id=agent.tenant_id, name=agent.name)
+
+== backend/app/api/agents.py ==
+"""Agent management (for logged-in users) and the agent-facing endpoints (enroll, heartbeat)."""
+
+import uuid
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import CurrentAgent, CurrentUser, get_current_agent, get_current_user, get_session
+from app.api.schemas_agents import (
+    AgentOut,
+    EnrollmentCodeCreate,
+    EnrollmentCodeResponse,
+    EnrollRequest,
+    EnrollResponse,
+)
+from app.core import ratelimit, security
+from app.repositories import agents as agents_repo
+from app.repositories import auth as auth_repo
+from shield_common.schemas import Heartbeat
+
+ENROLLMENT_CODE_MINUTES = 15
+
+router = APIRouter(prefix="/agents", tags=["agents"])
+agent_router = APIRouter(prefix="/agent", tags=["agent"])
+
+
+def _agent_not_found() -> HTTPException:
+    # Same answer for "does not exist" and "belongs to another tenant": nothing leaks.
+    return HTTPException(status_code=404, detail="Agent not found")
+
+
+# ---------------------------------------------------------------- for logged-in users
+@router.post("/enrollment-codes", response_model=EnrollmentCodeResponse, status_code=201)
+async def create_enrollment_code(
+    body: EnrollmentCodeCreate,
+    response: Response,
+    current: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    await ratelimit.hit(ratelimit.ENROLL_CODES_PER_TENANT, str(current.tenant_id))
+    code, code_hash = security.new_enrollment_code()
+    expires_at = auth_repo.utcnow() + timedelta(minutes=ENROLLMENT_CODE_MINUTES)
+    agents_repo.add_enrollment_code(
+        session, current.tenant_id, agent_name=body.agent_name, code_hash=code_hash, expires_at=expires_at
+    )
+    auth_repo.audit(session, current.tenant_id, str(current.user_id), "agent.enrollment_code_created", body.agent_name)
+    await session.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return EnrollmentCodeResponse(code=code, agent_name=body.agent_name, expires_at=expires_at)
+
+
+@router.get("", response_model=list[AgentOut])
+async def list_agents(current: CurrentUser = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    return await agents_repo.list_agents(session, current.tenant_id)
+
+
+@router.get("/{agent_id}", response_model=AgentOut)
+async def get_agent(
+    agent_id: uuid.UUID,
+    current: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    agent = await agents_repo.get_agent(session, current.tenant_id, agent_id)
+    if agent is None:
+        raise _agent_not_found()
+    return agent
+
+
+@router.delete("/{agent_id}", status_code=204)
+async def revoke_agent(
+    agent_id: uuid.UUID,
+    current: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    if not await agents_repo.revoke_agent(session, current.tenant_id, agent_id):
+        raise _agent_not_found()
+    auth_repo.audit(session, current.tenant_id, str(current.user_id), "agent.revoked", str(agent_id))
+    await session.commit()
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------- for agents
+@agent_router.post("/enroll", response_model=EnrollResponse, status_code=201)
+async def enroll(
+    body: EnrollRequest, request: Request, response: Response, session: AsyncSession = Depends(get_session)
+):
+    await ratelimit.hit(ratelimit.ENROLL_PER_IP, ratelimit.client_ip(request))
+    row = await agents_repo.consume_enrollment_code(session, security.hash_token(body.code))
+    if row is None:  # unknown, expired and already-used codes look identical
+        raise HTTPException(status_code=401, detail="Invalid or expired enrollment code")
+    api_key, key_hash = security.new_api_key()
+    agent = await agents_repo.create_agent(
+        session,
+        row.tenant_id,
+        name=row.agent_name,
+        api_key_hash=key_hash,
+        platform=body.platform,
+        version=body.version,
+    )
+    auth_repo.audit(session, row.tenant_id, f"agent:{agent.id}", "agent.enrolled", str(agent.id))
+    await session.commit()  # marking the code used and creating the agent succeed or fail together
+    response.headers["Cache-Control"] = "no-store"
+    return EnrollResponse(agent_id=agent.id, api_key=api_key, agent_name=agent.name)
+
+
+@agent_router.post("/heartbeat", status_code=204)
+async def heartbeat(
+    body: Heartbeat,
+    agent: CurrentAgent = Depends(get_current_agent),
+    session: AsyncSession = Depends(get_session),
+):
+    await ratelimit.hit(ratelimit.HEARTBEAT_PER_AGENT, str(agent.agent_id))
+    await agents_repo.touch_agent(
+        session, agent.tenant_id, agent.agent_id, platform=body.platform, version=body.agent_version
+    )
+    await session.commit()
+    return Response(status_code=204)
+
+== backend/app/api/schemas_agents.py ==
+"""Request and response bodies for agents and enrollment."""
+
+import uuid
+from datetime import datetime
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, StringConstraints
+
+from shield_common.schemas import VersionStr
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+AgentName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class EnrollmentCodeCreate(_Strict):
+    agent_name: AgentName
+
+
+class EnrollmentCodeResponse(BaseModel):
+    code: str
+    agent_name: str
+    expires_at: datetime
+
+
+class EnrollRequest(_Strict):
+    code: Annotated[str, StringConstraints(strip_whitespace=True, min_length=8, max_length=64)]
+    platform: Literal["linux", "windows", "other"]
+    version: VersionStr
+
+
+class EnrollResponse(BaseModel):
+    agent_id: uuid.UUID
+    api_key: str
+    agent_name: str
+
+
+class AgentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    platform: str | None
+    version: str | None
+    status: str
+    last_seen_at: datetime | None
+    created_at: datetime
+
+== backend/app/repositories/agents.py ==
+"""Agents and enrollment codes.
+
+Every function takes tenant_id, EXCEPT the two that authenticate a secret
+(consume_enrollment_code and get_active_agent_by_key_hash): there the secret identifies the tenant.
+tests/test_schema_rules.py enforces this rule for every public function in this module.
+"""
+
+import uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Agent, EnrollmentCode
+
+
+def add_enrollment_code(
+    session: AsyncSession, tenant_id: uuid.UUID, *, agent_name: str, code_hash: str, expires_at: datetime
+) -> None:
+    session.add(EnrollmentCode(tenant_id=tenant_id, agent_name=agent_name, code_hash=code_hash, expires_at=expires_at))
+
+
+async def consume_enrollment_code(session: AsyncSession, code_hash: str):
+    """Atomically mark a valid, unused, unexpired code as used. Single use even under concurrency.
+
+    Returns a row (tenant_id, agent_name) or None.
+    """
+    stmt = (
+        update(EnrollmentCode)
+        .where(
+            EnrollmentCode.code_hash == code_hash,
+            EnrollmentCode.used_at.is_(None),
+            EnrollmentCode.expires_at > func.now(),
+        )
+        .values(used_at=func.now())
+        .returning(EnrollmentCode.tenant_id, EnrollmentCode.agent_name)
+        .execution_options(synchronize_session=False)
+    )
+    return (await session.execute(stmt)).one_or_none()
+
+
+async def create_agent(
+    session: AsyncSession, tenant_id: uuid.UUID, *, name: str, api_key_hash: str, platform: str, version: str
+) -> Agent:
+    agent = Agent(tenant_id=tenant_id, name=name, api_key_hash=api_key_hash, platform=platform, version=version)
+    session.add(agent)
+    await session.flush()
+    return agent
+
+
+async def list_agents(session: AsyncSession, tenant_id: uuid.UUID) -> list[Agent]:
+    result = await session.execute(
+        select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.created_at, Agent.id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_agent(session: AsyncSession, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> Agent | None:
+    result = await session.execute(select(Agent).where(Agent.tenant_id == tenant_id, Agent.id == agent_id))
+    return result.scalar_one_or_none()
+
+
+async def revoke_agent(session: AsyncSession, tenant_id: uuid.UUID, agent_id: uuid.UUID) -> bool:
+    """Revoke an agent of this tenant. False if it does not exist for this tenant. Idempotent."""
+    agent = await get_agent(session, tenant_id, agent_id)
+    if agent is None:
+        return False
+    if agent.status != "revoked":
+        agent.status = "revoked"
+        agent.revoked_at = datetime.now(UTC)
+    return True
+
+
+async def touch_agent(
+    session: AsyncSession, tenant_id: uuid.UUID, agent_id: uuid.UUID, *, platform: str, version: str
+) -> None:
+    await session.execute(
+        update(Agent)
+        .where(Agent.tenant_id == tenant_id, Agent.id == agent_id)
+        .values(last_seen_at=func.now(), platform=platform, version=version)
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def get_active_agent_by_key_hash(session: AsyncSession, key_hash: str) -> Agent | None:
+    result = await session.execute(select(Agent).where(Agent.api_key_hash == key_hash, Agent.status == "active"))
+    return result.scalar_one_or_none()
+
+== deploy/docker-compose.yml ==
+x-backend: &backend
+  image: shield-backend:dev
+  build:
+    context: ..
+    dockerfile: backend/Dockerfile
+  environment:
+    DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    JWT_SECRET: ${JWT_SECRET}
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - backend-api
+    mem_limit: 192m
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 256m
+
+  backend-api:
+    <<: *backend
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_limit: 384m
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 128m
+
+volumes:
+  caddy_data:
+  pg_data:
+  redis_data:
+
+== deploy/Caddyfile ==
+shield.lab, localhost {
+    tls internal
+    encode gzip
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        -Server
+    }
+    reverse_proxy backend-api:8000
+}
+
+== docs/adr/ADR-004-anomaly-score.md ==
+# ADR-004: Anomaly score convention
+Decision: ONNX output "scores" equals sklearn decision_function (higher = more normal, anomalies negative). Read the output by name, never by position.
+Alert threshold is chosen on a benign validation set and stored in the model manifest with this note.
+Versions verified: sklearn 1.9.1, skl2onnx 1.20.0, onnxruntime 1.30.0.
+
+== docs/adr/ADR-005-capture-method.md ==
+# ADR-005: Capture method
+Decision: the sensor reads raw frames from a Linux AF_PACKET socket and parses only the header fields it needs (IPv4/IPv6, TCP/UDP/ICMP) with struct. Scapy is used only for tests (crafting golden PCAPs), not in the live capture path.
+Why: spike S2/S2b. Scapy used 59-69% of a core and lost packets inconsistently above about 1000 pkt/s; the raw socket used 15-21% and gives a kernel drop counter (PACKET_STATISTICS).
+Consequences:
+- Heartbeats report packets seen and dropped, so the dashboard can show "capture overloaded".
+- Installer raises net.core.rmem_max (sensor does not get CAP_NET_ADMIN).
+- Sensor excludes its own traffic to the Shield server in code.
+- IPv6 parsing needs unit tests with crafted PCAPs.
+- Test VM limits what we can measure (about 1500 pkt/s); demo attacks stay at or below 1000-1500 pkt/s.
+
+== docs/PROGRESS.md ==
+# Progress log
+## 2026-10-01
+- Phase 0: WSL2 memory cap set, Docker works, repo cloned.
+- S3 (LLM speed): phi3:mini about 15 tok/s, 12.6 s for 180 tokens. Pass for now; quality comparison in Phase 6.
+- S1 (ONNX export): PASS. sklearn 1.9.1, skl2onnx 1.20.0, onnxruntime 1.30.0. ONNX outputs: label, scores. scores == decision_function (higher = more normal, anomalies negative).
+- S3 (LLM): phi3:mini 87% GPU / 13% CPU at 4096 context, so it spills. Testing llama3.2:3b next.
+- S3 (LLM): PASS. llama3.2:3b 100% GPU, 46 tok/s. Chosen over phi3:mini (ADR-003).
+- S4 (Compose + HTTPS baseline): PASS. Postgres, Redis, FastAPI and Caddy local-CA TLS healthy. /readyz returns 503 when Redis is stopped. Whole stack about 150 MiB RAM.
+- S2 (capture): PASS for normal traffic. Scapy captured 100% at 1000 pkt/s; losses above about 4-5k pkt/s (noisy). Plan: BPF filter to exclude agent-to-server traffic, report drops in heartbeats, demo attacks at or below 1-2k pkt/s.
+- B3 (VM to server over HTTPS with CA check): PASS.
+- S2b (raw socket capture): about 97-98% captured at about 1000-1500 pkt/s, kernel drop counter works, 15-21% CPU. Decision: raw AF_PACKET sensor (ADR-005).
+- Phase 1.1: shield_common (schemas + IP checks), 59 tests passing.
+- Phase 1.2: SQLAlchemy models, Alembic initial migration applied, db_smoke.py proves tenant-link and constraint rules.
+- Phase 1.3a: security primitives (Argon2id passwords, HS256 access tokens, opaque refresh tokens, settings) with unit tests.
+- Phase 1.3b: register, login, refresh (rotation + reuse detection), logout and /me API with integration tests on shield_test.
+- Phase 1.3c: backend image with shield_common + alembic, migrate one-shot service, restart policies, security headers; register/me/refresh verified over HTTPS through Caddy.
+- Phase 1.3d: Redis rate limiting for register, login and refresh, with tests; X-Forwarded-For spoofing checked through Caddy.
+- Phase 1.4: agent enrollment, agent API keys, heartbeat, tenant-isolation suite and guardrail tests; enrollment flow verified through HTTPS.
+- Phase 1.5: pinned dependencies (pip-tools), ruff, alembic check, GitHub Actions CI, Dependabot, scripts/check.sh.
+- Phase 1 complete and CI green. Repository rules, README with CI badge, ADR-011.
+- Plan updated to v2.2: Phase 1 results, working conventions, Phase 2 roadmap.
+- Phase 2.1: defensive packet parser with golden, malformed-frame and fuzz tests (45 agent tests); agent tests added to check.sh and CI; parser speed about 290k packets per second.
+- Phase 2.2: flow assembler (bounded memory, timeouts, TCP close, eviction), shared feature math, per-source scan counters, wire-contract and random-stream tests.
+

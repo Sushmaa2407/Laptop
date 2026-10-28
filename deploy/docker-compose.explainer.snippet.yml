@@ -1,0 +1,15 @@
+# Paste this service into deploy/docker-compose.yml under "services:", right after backend-worker.
+  backend-explainer:
+    <<: *backend
+    command: ["python", "-m", "app.explainer"]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 192m

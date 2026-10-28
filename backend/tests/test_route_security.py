@@ -12,6 +12,11 @@ import httpx
 from app.main import app
 
 PUBLIC = {
+    ("GET", "/api/v1/downloads/install.sh"),
+    ("GET", "/api/v1/downloads/uninstall.sh"),
+    ("GET", "/api/v1/downloads/agent-linux.tgz"),
+    ("GET", "/api/v1/downloads/agent-linux.tgz.sha256"),
+    ("GET", "/api/v1/downloads/ca.crt"),
     ("GET", "/healthz"),
     ("GET", "/readyz"),
     ("POST", "/api/v1/auth/register"),

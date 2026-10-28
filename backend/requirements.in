@@ -7,3 +7,7 @@ alembic
 argon2-cffi
 pyjwt
 email-validator
+numpy
+onnxruntime
+numpy
+onnxruntime
