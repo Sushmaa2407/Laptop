@@ -24,6 +24,16 @@ def default_config_path() -> Path:
     return Path.home() / ".config" / "shield-agent" / "config.json"
 
 
+def default_state_path() -> Path:
+    """Where the agent remembers its active firewall blocks between restarts."""
+    override = os.environ.get("SHIELD_AGENT_STATE")
+    if override:
+        return Path(override)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return Path("/var/lib/shield-agent/blocks.json")
+    return Path.home() / ".local" / "state" / "shield-agent" / "blocks.json"
+
+
 @dataclass
 class AgentConfig:
     server_url: str  # e.g. https://shield.lab

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getAgents, getAlert, getAlerts, getStats, hasToken, logout, setAuthLostHandler } from "./api.js";
 import CaseFile from "./CaseFile.jsx";
+import Devices from "./Devices.jsx";
 import Login from "./Login.jsx";
 import Queue from "./Queue.jsx";
 import { usePoll } from "./usePoll.js";
@@ -9,6 +10,7 @@ import { SEVERITY_ORDER, timeAgo } from "./util.js";
 function Dashboard({ onSignOut }) {
   const [filter, setFilter] = useState("open");
   const [selectedId, setSelectedId] = useState(null);
+  const [view, setView] = useState("alerts");
 
   const stats = usePoll(getStats, 3000);
   const agents = usePoll(getAgents, 5000);
@@ -36,6 +38,10 @@ function Dashboard({ onSignOut }) {
     <div className="app">
       <header className="topbar">
         <span className="brand">Laptop Shield</span>
+        <nav className="nav" aria-label="Main">
+          <button className={view === "alerts" ? "nav-item on" : "nav-item"} onClick={() => setView("alerts")}>Alerts</button>
+          <button className={view === "devices" ? "nav-item on" : "nav-item"} onClick={() => setView("devices")}>Devices</button>
+        </nav>
         <p className="statusline" aria-live="polite">
           {stats.data ? (
             <>
@@ -62,6 +68,9 @@ function Dashboard({ onSignOut }) {
 
       {connError && <p role="alert" className="banner">{connError.message}</p>}
 
+      {view === "devices" ? (
+        <Devices />
+      ) : (
       <div className="layout">
         <Queue
           alerts={sorted}
@@ -85,6 +94,7 @@ function Dashboard({ onSignOut }) {
           key={selectedId}
         />
       </div>
+      )}
     </div>
   );
 }

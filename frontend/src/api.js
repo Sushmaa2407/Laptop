@@ -88,6 +88,11 @@ export async function login(email, password) {
   saveToken(data.access_token);
 }
 
+export async function register(tenantName, email, password) {
+  await request("/auth/register", { method: "POST", body: { email, password, tenant_name: tenantName } });
+  await login(email, password);
+}
+
 export async function logout() {
   try {
     await request("/auth/logout", { method: "POST" });
@@ -105,3 +110,5 @@ export const getAlertCommands = (id) => request(`/alerts/${id}/commands`);
 export const decideAlert = (id, action, ttlMinutes) =>
   request(`/alerts/${id}/decision`, { method: "POST", body: { action, ttl_minutes: ttlMinutes } });
 export const unblockAlert = (id) => request(`/alerts/${id}/unblock`, { method: "POST" });
+export const createEnrollmentCode = (agentName) =>
+  request("/agents/enrollment-codes", { method: "POST", body: { agent_name: agentName } });

@@ -1,0 +1,4 @@
+# Add this "volumes" entry to the backend-api service in deploy/docker-compose.yml.
+# (If backend-api already has a "volumes:" list, add just the "- ../dist/downloads..." line to it.)
+    volumes:
+      - ../dist/downloads:/downloads:ro

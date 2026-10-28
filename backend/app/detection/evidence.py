@@ -59,6 +59,7 @@ def build_evidence(
     severity: str,
     extras: dict[str, float] | None = None,
     temporal: TemporalResult | None = None,
+    drift: float = 0.0,
 ) -> Evidence:
     anomalous = score >= threshold
     conflicts = []
@@ -83,7 +84,7 @@ def build_evidence(
         anomaly=AnomalyEvidence(score=round(score, 4), threshold=threshold, is_anomalous=anomalous,
                                 model_version=model_version),
         temporal=TemporalEvidence(events_seen=temporal.events if temporal else 0, periodicity_score=temporal.score if temporal else 0.0,
-                                  baseline_drift=0.0, is_periodic=temporal.is_periodic if temporal else False),
+                                  baseline_drift=min(1.0, max(0.0, drift)), is_periodic=temporal.is_periodic if temporal else False),
         key_features=[KeyFeature(name=n, value=float(flow[n])) for n in KEY_FEATURES]
         + [KeyFeature(name=n, value=float(v)) for n, v in (extras or {}).items()],
         conflicts=conflicts,

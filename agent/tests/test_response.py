@@ -37,3 +37,21 @@ def test_block_and_unblock_cover_both_directions(monkeypatch):
     inserts = [c for c in calls if "-I" in c]
     assert any(c[c.index("-I") + 1] == "INPUT" and "-s" in c for c in inserts)
     assert any(c[c.index("-I") + 1] == "OUTPUT" and "-d" in c for c in inserts)
+
+
+def test_blocks_survive_an_agent_restart(tmp_path):
+    state = tmp_path / "blocks.json"
+    first = Responder(dry_run=True, state_path=state)
+    first.apply({"type": "block_ip", "ip": "10.0.0.66", "ttl_minutes": 30})
+    assert state.exists()
+    second = Responder(dry_run=True, state_path=state)  # the agent restarted
+    assert second.expire_due(now=0) == []  # still blocked, remembered
+    assert second.expire_due(now=10**12) == ["10.0.0.66"]  # and removed on time
+    assert Responder(dry_run=True, state_path=state).expire_due(now=10**12) == []
+
+
+def test_ended_blocks_are_removed_on_startup(tmp_path):
+    state = tmp_path / "blocks.json"
+    state.write_text('{"10.0.0.66": 1.0}')  # ended long ago
+    Responder(dry_run=True, state_path=state)
+    assert state.read_text() == "{}"

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { decideAlert, getAlertCommands, unblockAlert } from "./api.js";
 import { usePoll } from "./usePoll.js";
-import { ACTION_LABEL, COMMAND_STATE, KIND_LABEL, TTL_OPTIONS, clock, conflictText, featureLabel, headline, kindOf, offenderIp } from "./util.js";
+import { ACTION_LABEL, COMMAND_STATE, KIND_LABEL, TTL_OPTIONS, clock, conflictText, featureLabel, driftLabel, headline, kindOf, offenderIp } from "./util.js";
 
 function Gauge({ score, threshold }) {
   const pct = (v) => `${Math.min(100, Math.max(0, v * 100))}%`;
@@ -65,6 +65,14 @@ function Evidence({ alert }) {
           </p>
           <Gauge score={anomaly.score} threshold={anomaly.threshold} />
         </div>
+        {temporal?.baseline_drift > 0 && (
+          <div>
+            <p className="label">Recent traffic</p>
+            <p>
+              {driftLabel(temporal.baseline_drift)} <span className="muted">(drift {temporal.baseline_drift.toFixed(2)})</span>
+            </p>
+          </div>
+        )}
         {temporal?.is_periodic && (
           <div>
             <p className="label">Timing</p>

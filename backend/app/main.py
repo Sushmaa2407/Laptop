@@ -8,6 +8,7 @@ from fastapi import FastAPI, Response
 from app.api.agents import agent_router
 from app.api.agents import router as agents_router
 from app.api.alerts import router as alerts_router
+from app.api.downloads import router as downloads_router
 from app.api.auth import me_router
 from app.api.auth import router as auth_router
 from app.api.telemetry import router as telemetry_router
@@ -29,6 +30,7 @@ app.include_router(agents_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")
 app.include_router(telemetry_router, prefix="/api/v1")
 app.include_router(alerts_router, prefix="/api/v1")
+app.include_router(downloads_router, prefix="/api/v1")
 
 
 @app.get("/healthz")

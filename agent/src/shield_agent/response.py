@@ -2,7 +2,8 @@
 
 Safety rules (the server is trusted, but a bug or a wrong click must not lock the machine out):
 - never block loopback, unspecified or multicast addresses, this machine's own addresses, or the Shield server
-- blocks are time-limited (ttl) and are removed when they expire or when the agent stops
+- blocks are time-limited (ttl); they are remembered in a small state file, so a restarted agent still removes
+  them on time (otherwise a restart would leave firewall rules behind forever)
 - a block drops traffic from the address (INPUT) and to the address (OUTPUT)
 - the address is validated with the ipaddress module and passed as a list argument (no shell)
 """
@@ -10,19 +11,55 @@ Safety rules (the server is trusted, but a bug or a wrong click must not lock th
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
+import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 log = logging.getLogger("shield.response")
 
 
 class Responder:
-    def __init__(self, protected: set[str] | None = None, dry_run: bool = False) -> None:
+    def __init__(self, protected: set[str] | None = None, dry_run: bool = False, state_path: Path | None = None) -> None:
         self._protected = {self._norm(a) for a in (protected or set()) if self._norm(a)}
         self._dry_run = dry_run
+        self._state_path = state_path
         self._blocked: dict[str, float] = {}  # ip -> unix time when the block ends
+        self._load()
+
+    def _load(self) -> None:
+        """Pick up blocks from before a restart: keep the ones still running, remove the ones that ended."""
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            saved = json.loads(self._state_path.read_text())
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        for ip, until in saved.items():
+            if self._norm(ip) is None or not isinstance(until, (int, float)):
+                continue
+            if until > now:
+                self._blocked[ip] = float(until)
+            else:
+                self._run(ip, add=False)
+        self._save()
+
+    def _save(self) -> None:
+        if self._state_path is None:
+            return
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(self._blocked, fh)
+            os.replace(tmp, self._state_path)
+        except OSError as exc:
+            log.warning("could not save block state: %s", exc)
 
     @staticmethod
     def _norm(value: str) -> str | None:
@@ -53,6 +90,8 @@ class Responder:
                 self._run(ip, add=False)
                 self._blocked.pop(ip, None)
                 done.append(ip)
+        if done:
+            self._save()
         return done
 
     def shutdown(self) -> None:
@@ -76,11 +115,13 @@ class Responder:
         if not self._run(ip, add=True):
             return "failed", "iptables failed (is the agent running as root?)"
         self._blocked[ip] = time.time() + ttl_minutes * 60
+        self._save()
         return "applied", f"blocked for {ttl_minutes} min"
 
     def _unblock(self, ip: str) -> tuple[str, str]:
         self._run(ip, add=False)
         self._blocked.pop(ip, None)
+        self._save()
         return "applied", "unblocked"
 
     def _run(self, ip: str, *, add: bool) -> bool:

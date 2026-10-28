@@ -12,6 +12,7 @@ const evidence = {
     { name: "pkt_len_mean", value: 44.0 },
   ],
   conflicts: [],
+  temporal: { events_seen: 0, periodicity_score: 0, baseline_drift: 0.62, is_periodic: false },
   severity: "high",
 };
 let alert;
@@ -33,6 +34,8 @@ beforeEach(() => {
   globalThis.fetch = vi.fn((url, opts = {}) => {
     calls.push([opts.method || "GET", url, opts.body]);
     if (url.startsWith("/api/v1/stats")) return respond({ open_alerts: 1, alerts_24h: 3, flows_5m: 412, agents_online: 1 });
+    if (url === "/api/v1/agents/enrollment-codes")
+      return respond({ code: "a1b2c3d4e5f60718", agent_name: JSON.parse(opts.body).agent_name, expires_at: new Date(Date.now() + 600000).toISOString() });
     if (url.startsWith("/api/v1/agents")) return respond([{ id: "g1", name: "vm-sensor", status: "active", last_seen_at: NOW, created_at: NOW }]);
     if (url === "/api/v1/alerts/a1/commands")
       return respond(alert.status === "blocked" ? [{ id: "c1", type: "block_ip", ip: "192.168.56.1", ttl_minutes: 60, state: "applied", result: "ok", created_at: NOW, acked_at: NOW }] : []);
@@ -53,6 +56,7 @@ describe("dashboard", () => {
     render(<App />);
     expect(await screen.findByText(/probed 150 ports on 192.168.56.103/)).toBeTruthy();
     expect(screen.getByText(/That is typical of a scan/)).toBeTruthy();
+    expect(screen.getByText(/very different from this machine's usual behaviour/)).toBeTruthy();
     expect(screen.getByText(/Written by llama3.2:3b/)).toBeTruthy();
     expect(screen.getByText("vm-sensor")).toBeTruthy();
 
@@ -86,6 +90,44 @@ describe("dashboard", () => {
     expect(await screen.findByText(/contacts 192.168.56.104 about every 10 seconds/)).toBeTruthy();
     expect(screen.getByText(/Regular rhythm/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Block 192.168.56.104" })).toBeTruthy();
+  });
+
+  it("creates a one-time install command on the Devices page", async () => {
+    const { default: App } = await import("./App.jsx");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Devices" }));
+    fireEvent.change(screen.getByLabelText("Name for this laptop"), { target: { value: "anna-laptop" } });
+    fireEvent.change(screen.getByLabelText("Server address the laptop will use"), { target: { value: "https://shield.example.org/" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create install command" }));
+    const cmd = await screen.findByText(/install\.sh/);
+    expect(cmd.textContent).toBe("curl -fsSLk https://shield.example.org/api/v1/downloads/install.sh | sudo bash -s -- --code a1b2c3d4e5f60718 --fetch-ca");
+    expect(JSON.parse(calls.find((c) => c[1] === "/api/v1/agents/enrollment-codes")[2])).toEqual({ agent_name: "anna-laptop" });
+    fireEvent.click(screen.getByLabelText(/own certificate authority/));
+    fireEvent.click(screen.getByRole("button", { name: "Create install command" }));
+    await waitFor(() => expect(screen.getByText(/install\.sh/).textContent).toBe("curl -fsSL https://shield.example.org/api/v1/downloads/install.sh | sudo bash -s -- --code a1b2c3d4e5f60718"));
+    expect(screen.getAllByText("vm-sensor").length).toBeGreaterThanOrEqual(2); // top bar and the device list
+  });
+
+  it("creates an account (register, then sign in) from the login screen", async () => {
+    sessionStorage.clear();
+    vi.resetModules();
+    globalThis.fetch = vi.fn((url, opts = {}) => {
+      calls.push([opts.method || "GET", url, opts.body]);
+      if (url === "/api/v1/auth/register") return respond({}, 201);
+      if (url === "/api/v1/auth/login") return respond({ access_token: "tok" });
+      return respond([]);
+    });
+    const { default: App } = await import("./App.jsx");
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Create an account" }));
+    fireEvent.change(screen.getByLabelText("Workspace name"), { target: { value: "Anna's lab" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "anna@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a-long-passphrase" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(calls.some((c) => c[1] === "/api/v1/auth/login")).toBe(true));
+    const reg = calls.find((c) => c[1] === "/api/v1/auth/register");
+    expect(JSON.parse(reg[2])).toEqual({ email: "anna@example.com", password: "a-long-passphrase", tenant_name: "Anna's lab" });
+    expect(sessionStorage.getItem("shield_token")).toBe("tok");
   });
 
   it("falls back to the login screen without a token", async () => {

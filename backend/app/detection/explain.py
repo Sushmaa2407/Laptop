@@ -74,6 +74,9 @@ def facts_for(evidence: dict) -> list[str]:
     else:
         out.append("No fixed rule matched this traffic")
     out.append(f"The anomaly model scored this traffic {anomaly['score']:.2f} out of 1; the alert line is {anomaly['threshold']:.2f}")
+    drift = evidence["temporal"]["baseline_drift"]
+    if drift >= 0.1:
+        out.append(f"This machine's recent traffic differs from its own usual behaviour (drift score {drift:.2f} out of 1)")
     if anomaly["is_anomalous"]:
         out.append("The anomaly model considers this traffic unusual compared with normal activity")
     else:

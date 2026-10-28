@@ -17,7 +17,7 @@ from collections import deque
 from pathlib import Path
 
 from shield_agent.client import ApiError, NetworkError, ShieldClient
-from shield_agent.config import AGENT_VERSION, AgentConfig
+from shield_agent.config import AGENT_VERSION, AgentConfig, default_state_path
 from shield_agent.response import Responder
 from shield_agent.sensor.capture import RawCapture, SelfTrafficFilter, local_addresses
 from shield_agent.sensor.flows import FlowTable, to_record
@@ -148,7 +148,8 @@ def run_sensor(config: AgentConfig, *, record_to: Path | None = None, seconds: f
         log.info("recording flows to %s", record_to)
     else:
         client = ShieldClient(config.server_url, config.api_key, config.ca_cert)
-        responder = Responder(protected=local_addresses() | own.server_addresses, dry_run=dry_run_block)
+        responder = Responder(protected=local_addresses() | own.server_addresses, dry_run=dry_run_block,
+                              state_path=default_state_path())
         uplink = Uplink(client, flows_q, capture, counters, responder, uplink_stop)
         uplink.start()
         log.info("sensor running, sending to %s", config.server_url)

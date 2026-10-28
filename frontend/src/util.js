@@ -97,3 +97,9 @@ export function offenderIp(alert) {
   const { flow, rule } = alert.evidence;
   return rule?.hit && rule.list_name === "beaconing" ? flow.dst_ip : flow.src_ip;
 }
+
+export function driftLabel(drift) {
+  if (drift < 0.1) return "close to this machine's usual behaviour";
+  if (drift < 0.3) return "somewhat different from this machine's usual behaviour";
+  return "very different from this machine's usual behaviour";
+}

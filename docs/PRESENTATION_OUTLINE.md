@@ -8,13 +8,13 @@
 6. **Human in the loop and safety.** The language model only explains and advises. Its answer must be valid JSON, may only mention numbers and addresses from the evidence, and falls back to a fixed template otherwise. The agent refuses to block itself or the server, blocks expire, and every action is audited.
 7. **Securing the platform itself.** Tenant isolation tests, hashed API keys, rate limiting, HTTPS, and a CI pipeline with lint, tests, dependency audit and secret scanning.
 8. **Live demo.** Follow `docs/DEMO_RUNBOOK.md`.
-9. **Results (be honest).** Show: time from attack start to alert (your stopwatch, 3 runs), which attacks were detected (port scan, SYN flood), false alerts on recorded normal traffic, and the test count. State clearly that the baseline was trained on traffic from your own lab.
-10. **Limitations.** Features come from single flows, the lab is small, encrypted payloads are not inspected, only a Linux agent exists, the 3-billion-parameter model can still word things badly (hence the guardrails), and slow "low and slow" scans can evade the rate rules, and legitimate software that checks in regularly (update checkers, monitoring) looks like beaconing, so a person must decide.
+9. **Results (be honest).** Include the CIC-IDS2017 table from `docs/EVALUATION_CICIDS2017.md` after you have run it on the real files, with its caveats. Show: time from attack start to alert (your stopwatch, 3 runs), which attacks were detected (port scan, SYN flood), false alerts on recorded normal traffic, and the test count. State clearly that the baseline was trained on traffic from your own lab.
+10. **Limitations.** Features come from single flows, the lab is small, encrypted payloads are not inspected, only a Linux sensor exists, the 3-billion-parameter model can still word things badly (hence the guardrails), and slow "low and slow" scans can evade the rate rules, and legitimate software that checks in regularly (update checkers, monitoring) looks like beaconing, so a person must decide.
 11. **Future work.** Windows agent, baseline-drift analysis, evaluation on the public CICIDS2017 dataset, a user study of the explanations, notifications by email or chat.
 12. **Conclusion and questions.**
 
 ## Things from the original plan that are not built
-The original plan also mentioned an A/B evaluation on CICIDS2017, a Windows agent, and a baseline-drift measure inside the temporal layer. They are not implemented. Do not claim them in the report or slides. Put them under future work. The temporal layer that exists measures regular timing (periodicity) only.
+The original plan also mentioned a Windows agent. It is not implemented (the sensor runs on Linux only). Do not claim it. Put it under future work. Built since the first plan: the temporal layer (regular timing), baseline drift (how different recent traffic is from the machine's own usual traffic), an offline evaluation on CIC-IDS2017 (`ml/scripts/eval_cicids.py`, results in `docs/EVALUATION_CICIDS2017.md` once you run it), and the installer with the Devices page (`docs/DISTRIBUTION.md`).
 
 ## Questions to prepare for
 - **Why Isolation Forest?** It needs only normal traffic to train, runs in microseconds through ONNX, and does not need labelled attacks.

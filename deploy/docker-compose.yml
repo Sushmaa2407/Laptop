@@ -73,6 +73,8 @@ services:
       redis:
         condition: service_healthy
     mem_limit: 384m
+    volumes:
+      - ../dist/downloads:/downloads:ro
 
   postgres:
     image: postgres:16-alpine

@@ -20,7 +20,7 @@ from redis.exceptions import RedisError, ResponseError
 from app.db.session import get_sessionmaker
 from app.detection import queue
 from app.detection.evidence import ANOMALY_ONLY_MIN_SCORE, build_evidence, decide_severity
-from app.detection import temporal
+from app.detection import drift, temporal
 from app.detection.rules import BEACONING, BRUTE_FORCE, SYN_FLOOD, RuleHit, check_flow, is_half_open, is_login_attempt
 from app.detection.scorer import OnnxScorer
 from app.repositories import detection as detection_repo
@@ -81,10 +81,11 @@ async def _beacons(r, tenant_id, agent_id, flows: list[dict], allow_nets: list) 
     return found
 
 
-def _add_alert(session, tenant_id, agent_id, scorer, flow, score, hit, severity, dedupe_key, extras, temporal_result=None):
+def _add_alert(session, tenant_id, agent_id, scorer, flow, score, hit, severity, dedupe_key, extras, temporal_result=None,
+               drift_value=0.0):
     alert_id = uuid.uuid4()
     evidence = build_evidence(alert_id=alert_id, flow=flow, hit=hit, score=score, threshold=scorer.threshold,
-                              model_version=scorer.model_version, severity=severity, extras=extras, temporal=temporal_result)
+                              model_version=scorer.model_version, severity=severity, extras=extras, temporal=temporal_result, drift=drift_value)
     detection_repo.add_alert(session, tenant_id, alert_id=alert_id, agent_id=agent_id, flow_id=uuid.UUID(flow["flow_id"]),
                              severity=severity, dedupe_key=dedupe_key, evidence=evidence.model_dump(mode="json"))
     return alert_id
@@ -96,6 +97,8 @@ async def process_batch(r, scorer: OnnxScorer, payload: dict) -> int:
     agent_id = uuid.UUID(payload["agent_id"])
     flows: list[dict] = payload["flows"]
     scores = scorer.score_records(flows)
+    await drift.record(r, tenant_id, agent_id, scores)
+    drift_value = await drift.compute(r, tenant_id, agent_id)
 
     # --- how many half-open flows did each source create in the last 10 s (SYN flood signal)?
     per_src = Counter(f["src_ip"] for f in flows if is_half_open(f))
@@ -146,7 +149,7 @@ async def process_batch(r, scorer: OnnxScorer, payload: dict) -> int:
             if not claimed:
                 continue
             alert_id = _add_alert(session, tenant_id, agent_id, scorer, flow, score, hit, severity, dedupe_key,
-                                  _extras(hit, half_open.get(src, 0), attempts.get((src, flow["dst_port"]), 0)))
+                                  _extras(hit, half_open.get(src, 0), attempts.get((src, flow["dst_port"]), 0)), None, drift_value)
             new_alert_ids.append(alert_id)
             created += 1
 
@@ -160,7 +163,7 @@ async def process_batch(r, scorer: OnnxScorer, payload: dict) -> int:
                                ex=BEACON_DEDUPE_SECONDS, nx=True):
                 continue
             alert_id = _add_alert(session, tenant_id, agent_id, scorer, flow, score, hit, severity, dedupe_key,
-                                  {"beacon_period_s": result.period_s, "beacon_events": result.events}, result)
+                                  {"beacon_period_s": result.period_s, "beacon_events": result.events}, result, drift_value)
             new_alert_ids.append(alert_id)
             created += 1
         await session.commit()

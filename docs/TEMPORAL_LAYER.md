@@ -23,4 +23,4 @@ Parameters and the simulation are in `backend/app/detection/temporal.py` and `ba
 ## Limits to state honestly
 - Legitimate software that checks in regularly (update checkers, health checks, monitoring) looks the same, so a person decides.
 - Beacons with more than about 15% random delay are missed.
-- The "baseline drift" field of the evidence record is not implemented and always 0.
+- Baseline drift (the other field of the timing section of the evidence) is computed separately in `backend/app/detection/drift.py`: it compares the last 30 minutes of anomaly scores with the previous day for the same device, and stays 0 until there is enough history.
