@@ -166,7 +166,7 @@ ruff==0.17.0
     # via -r requirements-dev.in
 sortedcontainers==2.4.0
     # via cyclonedx-python-lib
-sqlalchemy==2.1.4
+sqlalchemy==2.1.6
     # via
     #   -r requirements.txt
     #   alembic
