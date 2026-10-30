@@ -4,7 +4,7 @@
 #
 #    pip-compile --output-file=requirements-dev.txt --strip-extras requirements-dev.in
 #
-alembic==1.20.0
+alembic==1.20.1
     # via -r requirements.txt
 annotated-doc==0.0.5
     # via
